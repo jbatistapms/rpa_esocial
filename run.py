@@ -1,20 +1,26 @@
-import os, uuid
+import os, re, uuid
 from pathlib import PurePath
+
+import dropbox
 from dotenv import load_dotenv
-from dropbox import Dropbox
 from flask import Flask, request
 load_dotenv(os.path.join(PurePath(__file__).parent, '.env'))
 
 app = Flask(__name__)
-dbx = Dropbox(os.getenv('DROPBOX_TOKEN'))
-tokens_autorizados = os.getenv('TOKENS').split(',')
+dbx = dropbox.Dropbox(
+    oauth2_refresh_token=os.getenv('DROPBOX_REFRESH_TOKEN'),
+    app_key=os.getenv('DROPBOX_APP_KEY'),
+)
+debug = os.getenv('DEBUG', '0') == '1'
+re_token = re.compile(r'Bearer (?P<token>.+)')
+tokens_autorizados = os.getenv('APP_TOKENS').split(',')
 
-def checar_token(token) -> bool:
-    _, token = token.split()
-    return token in tokens_autorizados
+def checar_token(auth) -> bool:
+    token = re_token.search(auth)
+    return token is not None and token.group('token') in tokens_autorizados
 
 def gravar_arquivo(dados: bytes) -> None:
-    if 'DEBUG' in os.environ:
+    if debug:
         with open(f'./dev/{uuid.uuid4()}.csv', 'wb') as arq_csv:
             arq_csv.write(dados)
     else:

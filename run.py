@@ -24,7 +24,10 @@ def gravar_arquivo(dados: bytes) -> None:
         with open(f'./dev/{uuid.uuid4()}.csv', 'wb') as arq_csv:
             arq_csv.write(dados)
     else:
-        dbx.files_upload(request.data, f'/rpas/{uuid.uuid4()}.csv')
+        if request.args.get('test', 'Falso') == 'Verdadeiro':
+            dbx.files_upload(request.data, f'/rpa_test/{uuid.uuid4()}_test.csv')
+        else:
+            dbx.files_upload(request.data, f'/rpa/{uuid.uuid4()}.csv')
 
 @app.route('/', methods=['GET'])
 def home():

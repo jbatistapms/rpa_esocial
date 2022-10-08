@@ -21,13 +21,13 @@ def checar_token(auth) -> bool:
 
 def gravar_arquivo(dados: bytes) -> None:
     if debug:
-        with open(f'./dev/{uuid.uuid4()}.csv', 'wb') as arq_csv:
+        with open(f'./dev/{uuid.uuid4()}.txt', 'wb') as arq_csv:
             arq_csv.write(dados)
     else:
         if request.args.get('test', 'Falso') == 'Verdadeiro':
-            dbx.files_upload(request.data, f'/rpa_test/{uuid.uuid4()}_test.csv')
+            dbx.files_upload(request.data, f'/rpa_test/{uuid.uuid4()}_test.txt')
         else:
-            dbx.files_upload(request.data, f'/rpa/{uuid.uuid4()}.csv')
+            dbx.files_upload(request.data, f'/rpa/{uuid.uuid4()}.txt')
 
 @app.route('/', methods=['GET'])
 def home():

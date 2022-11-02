@@ -172,14 +172,9 @@ class Controlador(object):
     def exportar_qcadastral(self) -> None:
         logger.debug("Iniciando exportação de dados de pessoal para qualificação cadastral")
         pessoas = []
-        for ps in TblPessoas.search((where('qcadastral')=='NÃO') | (where('qcadastral')=='ERRO')):
-            ps_qc = OrderedDict()
-            ps_qc['CPF'] = f"{ps['cpf']:>011}"
-            ps_qc['NIS'] = f"{ps['nis_pis']:>011}"
-            ps_qc['NOME'] = ps['nome']
-            ps_qc['DN'] = limpar_doc(ps['dt_nascimento'])
-            pessoas.append(ps_qc)
-        salvar_dados(dados=pessoas, dst=self.__destino.joinpath('qualificacao_cadastral.txt'))
+        with self.__destino.joinpath('qualificacao_cadastral.txt').open('w') as arq:
+            for ps in TblPessoas.search((where('qcadastral')=='NÃO') | (where('qcadastral')=='ERRO')):
+                arq.write(f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};{limpar_doc(ps['dt_nascimento'])}\n")
     
     def exportar_recibos(self) -> None:
         recibos = []

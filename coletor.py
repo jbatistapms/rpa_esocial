@@ -1,5 +1,4 @@
 import csv, decimal, os, sys, unicodedata, uuid
-from lib2to3.pgen2.token import OP
 from argparse import ArgumentParser
 from collections import defaultdict, OrderedDict
 from hashlib import md5
@@ -8,7 +7,7 @@ from openpyxl.styles import Alignment, NamedStyle
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from pathlib import Path, WindowsPath
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Final, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -89,8 +88,10 @@ class Arquivo(object):
 
 class Coletor(object):
     def __init__(self, origem: WindowsPath) -> None:
-        self.__origem: WindowsPath = origem
+        self.__origem = origem
         self.__origem.mkdir(exist_ok=True)
+        self.__dir_recibos = self.__origem.joinpath("Recibos")
+        self.__dir_recibos.mkdir(exist_ok=True)
     
     def __validar_arquivo(self, arq: WindowsPath) -> bool:
         try:
@@ -104,7 +105,7 @@ class Coletor(object):
     
     def arquivos(self) -> List[Arquivo]:
         self.__arquivos = [
-            Arquivo(loc=arq) for arq in self.__origem.iterdir()
+            Arquivo(loc=arq) for arq in self.__dir_recibos.iterdir()
             if self.__validar_arquivo(arq=arq)
         ]
         return self.__arquivos
@@ -124,62 +125,26 @@ class Controlador(object):
         else:
             self.__loc_recibos = self.__destino.joinpath('recibos.xlsx')
     
-    def __exportar_recibos(self, recibos: List['Recibo'], dst: WindowsPath) -> None:
-        if len(recibos) > 0:
-            cabecalho = list(titulo_excel_recibo.keys())
-            alinhamento_centro = Alignment(horizontal='center')
-            tipo_cbo = NamedStyle(
-                name='cbo',
-                number_format='0000"-"00',
-                alignment=alinhamento_centro,
+    def exportar_pessoas(self) -> None:
+        plan_pessoas = PlanilhaPessoas(loc=self.__destino.joinpath('Pessoas.xlsx'))
+        if COMPETENCIA:
+            condicao_bd = (
+                (where('comp_inicial') == COMPETENCIA) &
+                (where('exportado') == False)
             )
-            tipo_cpf = NamedStyle(
-                name='cpf',
-                number_format='000"."000"."000"-"00',
-                alignment=alinhamento_centro,
-            )
-            tipo_data = NamedStyle(
-                name='data',
-                number_format='dd/mm/yyyy',
-                alignment=alinhamento_centro,
-            )
-            tipo_moeda = NamedStyle(
-                name='moeda',
-                number_format='#,##0.00',
-            )
-            tipo_nit = NamedStyle(
-                name='nit',
-                number_format='000"."00000"."00"-"0',
-                alignment=alinhamento_centro,
-            )
-            criar_planilha(
-                cbc=cabecalho,
-                lns=[list(rec.dados_planilha()) for rec in recibos],
-                loc=dst,
-                estilo={
-                    tipo_data: ['Data inicial', 'Data de nascimento', 'Data final'],
-                    tipo_cpf: ['CPF'],
-                    tipo_nit: ['NIS/PIS'],
-                    tipo_cbo: ['CBO'],
-                    tipo_moeda: [
-                        'Valor', 'Dsc. INSS', 'Dif. INSS', 'Dsc. IRRF', 'Dsc. ISS', 
-                        'Valor - Outros descontos I', 'Valor - Outros descontos II',
-                        'Líquido'
-                    ],
-                }
-            )
-
-    def exportar_qcadastral(self) -> None:
-        logger.debug("Iniciando exportação de dados de pessoal para qualificação cadastral")
-        pessoas = []
-        with self.__destino.joinpath('qualificacao_cadastral.txt').open('w') as arq:
-            for ps in TblPessoas.search((where('qcadastral')=='NÃO') | (where('qcadastral')=='ERRO')):
-                arq.write(f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};{limpar_doc(ps['dt_nascimento'])}\n")
+            bd_pessoas = TblPessoas.search(condicao_bd)
+        else:
+            condicao_bd = None
+            bd_pessoas = []
+        for dados in bd_pessoas:
+            plan_pessoas.inserir(registro=dados)
+        plan_pessoas.gravar()
+        plan_pessoas.gravar_qcadatral()
+        if condicao_bd:
+            TblPessoas.update({'exportado': True}, cond=condicao_bd)
     
     def exportar_recibos(self) -> None:
-        recibos = []
-        if self.__loc_recibos.exists():
-            recibos += ler_planilha(loc=self.__loc_recibos)
+        plan_recibos = PlanilhaRecibos(loc=self.__loc_recibos)
         if COMPETENCIA:
             condicao_bd = (
                 (where('dt_final').search(f'{COMPETENCIA}')) &
@@ -191,11 +156,9 @@ class Controlador(object):
             if self.__loc_recibos.exists():
                 os.remove(self.__loc_recibos)
             recibos_bd = TblRecibos.all()
-        recibos += [Recibo(**dados) for dados in recibos_bd]
-        self.__exportar_recibos(
-            recibos=recibos,
-            dst=self.__loc_recibos,
-        )
+        for dados in recibos_bd:
+            plan_recibos.inserir(registro=dados)
+        plan_recibos.gravar()
         if condicao_bd:
             TblRecibos.update({'exportado': True}, cond=condicao_bd)
 
@@ -207,8 +170,9 @@ class Recibo(object):
         self.__tratar_dados()
         self.__dados_pessoa = copiar_dict(
             obj=self.__dados,
-            inc=['cpf', 'dt_nascimento', 'nis_pis', 'nome', 'qcadastral']
+            inc=['cpf', 'dt_nascimento', 'nis_pis', 'nome', 'qcadastral', 'exportado']
         )
+        self.__dados_pessoa['comp_inicial'] = self.__dados['dt_inicial'][3:]
     
     def __limpar_doc(self, cmp: str, cont: int) -> None:
         valor = self.__dados[cmp]
@@ -283,7 +247,7 @@ class Recibo(object):
         rec_temp = OrderedDict()
         for exc, txt in titulo_excel_recibo.items():
             rec_temp[exc] = self.__dados.get(txt, '')
-        return rec_temp.values()
+        return list(rec_temp.values())
     
     def erros(self) -> str:
         erros = ''
@@ -313,6 +277,219 @@ class Recibo(object):
         recibo_db = TblRecibos.get(where('id')==self.__dados['id'])
         if recibo_db is None:
             TblRecibos.insert(self.__dados)
+
+
+class Planilha(object):
+    classe: dict
+    conversor: dict
+    estilos: dict
+    titulo: str
+
+    def __init__(self, loc: WindowsPath) -> None:
+        self.loc: Final = loc
+        if loc.exists():
+            self.__registros = self.__ler()
+        else:
+            self.__registros = defaultdict(dict)
+    
+    def __ler(self) -> List[Dict]:
+        wb = load_workbook(self.loc)
+        ws = wb[self.titulo]
+        lista_linhas = []
+        for row in ws.rows:
+            linha = []
+            for cell in row:
+                linha.append(cell.value)
+            lista_linhas.append(linha)
+        cabecalho = lista_linhas.pop(0)
+        registros = defaultdict()
+        for linha in lista_linhas:
+            dados = defaultdict()
+            for exc, txt in self.conversor.items():
+                try:
+                    idx = cabecalho.index(exc)
+                except:
+                    logger.error(f"Coluna {exc} inexistente em {self.loc}")
+                    sys.exit()
+                dados[txt] = linha[idx]
+            if dados['cpf'] is not None:
+                registros[dados['cpf']] = self.classe(**dados)
+        return registros
+    
+    def dados_gravar(self, reg: dict) -> list:
+        return [reg[col] for col in self.conversor.values()]
+    
+    def gravar(self) -> None:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = self.titulo
+
+        # Escrever cabeçalho
+        cbc = list(self.conversor.keys())
+        ws.append(cbc)
+        
+        # Escrever linhas
+        linhas = self.registros()
+        for reg in linhas:
+            ws.append(self.dados_gravar(reg=reg))
+        
+        colunas = list(ws.columns)
+        
+        # Criar tabela e definir estilo
+        style = TableStyleInfo(
+            name="TableStyleLight15",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        column = list(ws.columns)[-1][0].column_letter
+        tab = Table(
+            displayName=self.titulo,
+            ref=f"A1:{column}{len(self.__registros)+1}",
+            tableStyleInfo=style,
+        )
+        ws.add_table(tab)
+
+        # Centralizar cabeçalho
+        for row in ws.iter_rows(min_row=1, max_col=len(cbc), max_row=1):
+            for cell in row:
+                cell.alignment = Alignment(horizontal='center')
+
+        # Redimensionamento
+        for col_n, column_cells in enumerate(colunas):
+            new_column_length = max(
+                [len(str(cell.value)) for cell in column_cells] +
+                [len(cbc[col_n])+5]
+            )
+            new_column_letter = get_column_letter(column_cells[0].column)
+            if new_column_length > 0:
+                ws.column_dimensions[new_column_letter].width = new_column_length*1.25
+        
+        # Aplicar estilos
+        for stl in self.tipo_estilos():
+            wb.add_named_style(stl)
+        for stl, colunas in self.estilos.items():
+            for col_nome in colunas:
+                idx = cbc.index(col_nome) + 1
+                for col in ws.iter_cols(min_col=idx, max_col=idx, min_row=2, max_row=len(linhas)*2):
+                    for cell in col:
+                        cell.style = stl
+
+        # Salvar arquivo
+        wb.save(self.loc)
+    
+    def inserir(self, registro: dict) -> None:
+        if not registro['cpf'] in self.__registros:
+            self.__registros[registro['cpf']] = self.classe(**registro)
+    
+    def registros(self) -> List:
+        return list(self.__registros.values())
+    
+    def tipo_estilos(self) -> dict:
+        alinhamento_centro = Alignment(horizontal='center')
+        cbo = NamedStyle(
+            name='cbo',
+            number_format='0000"-"00',
+            alignment=alinhamento_centro,
+        )
+        cpf = NamedStyle(
+            name='cpf',
+            number_format='000"."000"."000"-"00',
+            alignment=alinhamento_centro,
+        )
+        data = NamedStyle(
+            name='data',
+            number_format='dd/mm/yyyy',
+            alignment=alinhamento_centro,
+        )
+        moeda = NamedStyle(
+            name='moeda',
+            number_format='#,##0.00',
+        )
+        nit = NamedStyle(
+            name='nit',
+            number_format='000"."00000"."00"-"0',
+            alignment=alinhamento_centro,
+        )
+        return [cbo, cpf, data, moeda, nit]
+
+
+class PlanilhaPessoas(Planilha):
+    classe = dict
+    conversor = {
+        'Nome': 'nome',
+        'CPF': 'cpf',
+        'NIS/PIS': 'nis_pis',
+        'Data de nascimento': 'dt_nascimento',
+        'Competência Inicial': 'comp_inicial',
+        'QCadastral': 'qcadastral',
+    }
+    estilos = {
+        'cpf': ['CPF'],
+        'data': ['Data de nascimento'],
+        'nit': ['NIS/PIS'],
+        'centro': ['QCadastral', 'Competência Inicial']
+    }
+    titulo = 'Pessoas'
+    
+    def gravar_qcadatral(self) -> None:
+        with self.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as arq:
+            for ps in self.registros():
+                if ps['qcadastral'] != 'SIM':
+                    arq.write(
+                        f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
+                        f"{limpar_doc(ps['dt_nascimento'])}\n"
+                    )
+    
+    def tipo_estilos(self) -> List:
+        alinhamento_centro = Alignment(horizontal='center')
+        centro = NamedStyle(
+            name='centro',
+            alignment=alinhamento_centro,
+        )
+        return super().tipo_estilos() + [centro]
+
+
+class PlanilhaRecibos(Planilha):
+    classe = Recibo
+    conversor = {
+        'Nome': 'nome',
+        'CPF': 'cpf',
+        'Data de nascimento': 'dt_nascimento',
+        'NIS/PIS': 'nis_pis',
+        'CBO': 'cbo',
+        'Serviço prestado': 'servico_prestado',
+        'Data inicial': 'dt_inicial',
+        'Data final': 'dt_final',
+        'Valor': 'valor',
+        'Dsc. INSS': 'dsc_inss',
+        'Dif. INSS': 'dif_inss',
+        'Dsc. IRRF': 'dsc_irrf',
+        'Dsc. ISS': 'dsc_iss',
+        'Descrição - Outros descontos I': 'outrosd_desc1',
+        'Valor - Outros descontos I': 'outrosd_valor1',
+        'Descrição - Outros descontos II': 'outrosd_desc2',
+        'Valor - Outros descontos II': 'outrosd_valor2',
+        'Líquido': 'v_liquido',
+        'Órgão contratante': 'orgao',
+        'Erros': 'erros',
+    }
+    estilos = {
+        'data': ['Data inicial', 'Data de nascimento', 'Data final'],
+        'cpf': ['CPF'],
+        'nit': ['NIS/PIS'],
+        'cbo': ['CBO'],
+        'moeda': [
+            'Valor', 'Dsc. INSS', 'Dif. INSS', 'Dsc. IRRF', 'Dsc. ISS', 
+            'Valor - Outros descontos I', 'Valor - Outros descontos II',
+            'Líquido'
+        ],
+    }
+    titulo = 'Recibos'
+    
+    def dados_gravar(self, reg: Recibo) -> dict:
+        return reg.dados_planilha()
 
 
 def copiar_dict(obj: dict, exc: Optional[List[str]]=None, inc: Optional[List[str]]=None) -> dict:
@@ -363,88 +540,6 @@ def salvar_dados(dados: List[dict], dst: Path, fieldnames: Optional[List]=None) 
         else:
             arq.write('')
 
-def criar_planilha(cbc: List, lns: List[List], loc: WindowsPath, estilo: Optional[Dict]):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = 'Recibos'
-
-    # Escrever cabeçalho
-    ws.append(cbc)
-    
-    # Escrever linhas
-    for lista in lns:
-        ws.append(lista)
-    
-    colunas = list(ws.columns)
-    
-    # Criar tabela e definir estilo
-    style = TableStyleInfo(
-        name="TableStyleLight15",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    column = list(ws.columns)[-1][0].column_letter
-    tab = Table(
-        displayName="recibos",
-        ref=f"A1:{column}{len(lns)+1}",
-        tableStyleInfo=style,
-    )
-    ws.add_table(tab)
-
-    # Centralizar cabeçalho
-    for row in ws.iter_rows(min_row=1, max_col=len(cbc), max_row=1):
-        for cell in row:
-            cell.alignment = Alignment(horizontal='center')
-
-    # Redimensionamento
-    for col_n, column_cells in enumerate(colunas):
-        new_column_length = max(
-            [len(str(cell.value)) for cell in column_cells] +
-            [len(cbc[col_n])+5]
-        )
-        new_column_letter = get_column_letter(column_cells[0].column)
-        if new_column_length > 0:
-            ws.column_dimensions[new_column_letter].width = new_column_length*1.25
-    
-    # Aplicar estilos
-    if isinstance(estilo, dict):
-        for stl, colunas in estilo.items():
-            wb.add_named_style(stl)
-            for col_nome in colunas:
-                idx = cbc.index(col_nome) + 1
-                for col in ws.iter_cols(min_col=idx, max_col=idx, min_row=2, max_row=len(lns)*2):
-                    for cell in col:
-                        cell.style = stl.name
-
-    # Salvar arquivo
-    wb.save(loc)
-
-def ler_planilha(loc: WindowsPath) -> List[Recibo]:
-    wb = load_workbook(loc)
-    ws = wb['Recibos']
-    lista_linhas = []
-    for row in ws.rows:
-        linha = []
-        for cell in row:
-            linha.append(cell.value)
-        lista_linhas.append(linha)
-    cabecalho = lista_linhas.pop(0)
-    recibos = []
-    for linha in lista_linhas:
-        dados = defaultdict()
-        for exc, txt in titulo_excel_recibo.items():
-            try:
-                idx = cabecalho.index(exc)
-            except:
-                logger.error(f"Coluna {exc} inexistente em {loc}")
-                sys.exit()
-            dados[txt] = linha[idx]
-        if dados['nome'] is not None:
-            recibos.append(Recibo(**dados))
-    return recibos
-
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('-p', '--producao', action='store_true', default=False)
@@ -469,5 +564,5 @@ if __name__ == '__main__':
     colt = Coletor(origem=origem)
     colt.salvar()
     exp = Controlador(destino=destino)
-    exp.exportar_qcadastral()
+    exp.exportar_pessoas()
     exp.exportar_recibos()

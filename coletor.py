@@ -16,7 +16,7 @@ load_dotenv()
 
 DIR_DEV = WindowsPath.cwd().joinpath('dev')
 DIR_DEV.mkdir(exist_ok=True)
-COMPETENCIA = os.getenv('COMPETENCIA', None)
+COMPETENCIA = os.getenv('COMPETENCIA') # mm/yyyy
 
 bd = TinyDB(DIR_DEV.joinpath('bd.json'))
 
@@ -119,48 +119,31 @@ class Controlador(object):
     def __init__(self, destino: WindowsPath) -> None:
         self.__destino: WindowsPath = destino
         self.__destino.mkdir(exist_ok=True)
-        if COMPETENCIA:
-            mes, ano = COMPETENCIA.split('/')
-            self.__loc_recibos = self.__destino.joinpath(f'{ano}.{mes}.xlsx')
-        else:
-            self.__loc_recibos = self.__destino.joinpath('recibos.xlsx')
+        mes, ano = COMPETENCIA.split('/')
+        self.__loc_recibos = self.__destino.joinpath(f'{ano}.{mes}.xlsx')
     
     def exportar_pessoas(self) -> None:
         plan_pessoas = PlanilhaPessoas(loc=self.__destino.joinpath('Pessoas.xlsx'))
-        if COMPETENCIA:
-            condicao_bd = (
-                (where('comp_inicial') == COMPETENCIA) &
-                (where('exportado') == False)
-            )
-            bd_pessoas = TblPessoas.search(condicao_bd)
-        else:
-            condicao_bd = None
-            bd_pessoas = []
-        for dados in bd_pessoas:
+        condicao_bd = (
+            (where('comp_inicial') == COMPETENCIA) &
+            (where('exportado') == False)
+        )
+        for dados in TblPessoas.search(condicao_bd):
             plan_pessoas.inserir(registro=dados)
         plan_pessoas.gravar()
         plan_pessoas.gravar_qcadatral()
-        if condicao_bd:
-            TblPessoas.update({'exportado': True}, cond=condicao_bd)
+        TblPessoas.update({'exportado': True}, cond=condicao_bd)
     
     def exportar_recibos(self) -> None:
         plan_recibos = PlanilhaRecibos(loc=self.__loc_recibos)
-        if COMPETENCIA:
-            condicao_bd = (
-                (where('dt_final').search(f'{COMPETENCIA}')) &
-                (where('exportado') == False)
-            )
-            recibos_bd = TblRecibos.search(condicao_bd)
-        else:
-            condicao_bd = None
-            if self.__loc_recibos.exists():
-                os.remove(self.__loc_recibos)
-            recibos_bd = TblRecibos.all()
-        for dados in recibos_bd:
+        condicao_bd = (
+            (where('dt_final').search(f'{COMPETENCIA}')) &
+            (where('exportado') == False)
+        )
+        for dados in TblRecibos.search(condicao_bd):
             plan_recibos.inserir(registro=dados)
         plan_recibos.gravar()
-        if condicao_bd:
-            TblRecibos.update({'exportado': True}, cond=condicao_bd)
+        TblRecibos.update({'exportado': True}, cond=condicao_bd)
 
 
 class Recibo(object):
@@ -436,7 +419,7 @@ class PlanilhaPessoas(Planilha):
     def gravar_qcadatral(self) -> None:
         with self.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as arq:
             for ps in self.registros():
-                if ps['qcadastral'] != 'SIM':
+                if ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA:
                     arq.write(
                         f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
                         f"{limpar_doc(ps['dt_nascimento'])}\n"

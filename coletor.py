@@ -1,16 +1,18 @@
 import csv, decimal, os, sys, unicodedata, uuid
+from datetime import datetime
 from argparse import ArgumentParser
 from collections import defaultdict, OrderedDict
 from hashlib import md5
+from pathlib import Path, WindowsPath
+from typing import Dict, Final, List, Optional, Tuple, Union
+
+import xlrd
+from dotenv import load_dotenv
+from loguru import logger
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Alignment, NamedStyle
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
-from pathlib import Path, WindowsPath
-from typing import Dict, Final, List, Optional, Tuple
-
-from dotenv import load_dotenv
-from loguru import logger
 from tinydb import where, TinyDB
 load_dotenv()
 
@@ -27,40 +29,28 @@ TblRecibos = bd.table('recibos')
 ctx_decimal = decimal.getcontext()
 ctx_decimal.rounding = decimal.ROUND_HALF_EVEN
 
-titulo_excel_recibo = {
-    'Nome': 'nome',
-    'CPF': 'cpf',
-    'Data de nascimento': 'dt_nascimento',
-    'NIS/PIS': 'nis_pis',
-    'CBO': 'cbo',
-    'Serviço prestado': 'servico_prestado',
-    'Data inicial': 'dt_inicial',
-    'Data final': 'dt_final',
-    'Valor': 'valor',
-    'Dsc. INSS': 'dsc_inss',
-    'Dif. INSS': 'dif_inss',
-    'Dsc. IRRF': 'dsc_irrf',
-    'Dsc. ISS': 'dsc_iss',
-    'Descrição - Outros descontos I': 'outrosd_desc1',
-    'Valor - Outros descontos I': 'outrosd_valor1',
-    'Descrição - Outros descontos II': 'outrosd_desc2',
-    'Valor - Outros descontos II': 'outrosd_valor2',
-    'Líquido': 'v_liquido',
-    'Órgão contratante': 'orgao',
-    'Erros': 'erros',
-}
-titulo_recibo_excel = {v: k for k, v in titulo_excel_recibo.items()}
-
 
 class Arquivo(object):
     def __init__(self, loc: WindowsPath) -> None:
         self.__loc = loc
         self.__logs_pln = []
         self.__recibos: List[Recibo] = []
-        with loc.open() as arq:
-            for ln in arq.readlines():
-                if ln.startswith("tipo»R"):
-                    self.__recibos.append(Recibo.novo_de_texto(text=ln))
+        self.id = None
+        if loc.suffix == '.txt':
+            try:
+                self.id = str(uuid.UUID(loc.stem))
+                with loc.open() as loc:
+                    for ln in loc.readlines():
+                        if ln.startswith("tipo»R"):
+                            self.__recibos.append(Recibo.novo_de_texto(text=ln))
+            except:
+                self.id = None
+                logger.error(f"Arquivo '{loc.stem}' com nome inválido.")
+        elif loc.suffix == '.xls':
+            recibo = Recibo.novo_de_planilha(loc=loc)
+            if recibo:
+                self.id = str(uuid.UUID(md5(loc.read_bytes()).hexdigest()))
+                self.__recibos.append(recibo)
     
     def __repr__(self) -> str:
         return repr(self.__loc)
@@ -74,17 +64,14 @@ class Arquivo(object):
     def logs_planilha(self) -> List:
         return self.__logs_pln
     
-    def nome(self) -> str:
-        return self.__loc.stem
-    
     def recibos(self) -> List['Recibo']:
         return self.__recibos
     
     def salvar(self) -> None:
         for rec in self.__recibos:
             rec.salvar()
-        TblArquivos.insert({'id': self.nome()})
-
+        TblArquivos.insert({'id': self.id})
+    
 
 class Coletor(object):
     def __init__(self, origem: WindowsPath) -> None:
@@ -93,25 +80,19 @@ class Coletor(object):
         self.__dir_recibos = self.__origem.joinpath("Recibos")
         self.__dir_recibos.mkdir(exist_ok=True)
     
-    def __validar_arquivo(self, arq: WindowsPath) -> bool:
-        try:
-            uuid.UUID(arq.stem)
-        except:
-            logger.error(f"Nome de arquivo '{arq.stem}' não é válido.")
-        else:
-            if TblArquivos.get(where('id')==arq.stem) is None:
-                return arq.suffix == '.txt'
-        return False
-    
-    def arquivos(self) -> List[Arquivo]:
-        self.__arquivos = [
-            Arquivo(loc=arq) for arq in self.__dir_recibos.iterdir()
-            if self.__validar_arquivo(arq=arq)
-        ]
-        return self.__arquivos
+    def arquivos(self, dir: WindowsPath) -> List[Arquivo]:
+        arquivos = []
+        for item in dir.iterdir():
+            if item.is_dir():
+                arquivos += self.arquivos(dir=item)
+            else:
+                arquivo = Arquivo(loc=item)
+                if arquivo.id and TblArquivos.get(where('id')==arquivo.id) is None:
+                    arquivos.append(arquivo)
+        return arquivos
     
     def salvar(self) -> None:
-        for arq in self.arquivos():
+        for arq in self.arquivos(dir=self.__dir_recibos):
             arq.salvar()
 
 
@@ -121,32 +102,59 @@ class Controlador(object):
         self.__destino.mkdir(exist_ok=True)
         mes, ano = COMPETENCIA.split('/')
         self.__loc_recibos = self.__destino.joinpath(f'{ano}.{mes}.xlsx')
+        self.pln_pessoas = PlanilhaPessoas(loc=self.__destino.joinpath('Pessoas.xlsx'))
+        self.pln_recibos = PlanilhaRecibos(loc=self.__loc_recibos)
     
     def exportar_pessoas(self) -> None:
-        plan_pessoas = PlanilhaPessoas(loc=self.__destino.joinpath('Pessoas.xlsx'))
         condicao_bd = (
             (where('comp_inicial') == COMPETENCIA) &
             (where('exportado') == False)
         )
         for dados in TblPessoas.search(condicao_bd):
-            plan_pessoas.inserir(registro=dados)
-        plan_pessoas.gravar()
-        plan_pessoas.gravar_qcadatral()
+            self.pln_pessoas.inserir(registro=dados)
+        self.pln_pessoas.gravar()
+        self.pln_pessoas.gravar_qcadatral()
         TblPessoas.update({'exportado': True}, cond=condicao_bd)
     
     def exportar_recibos(self) -> None:
-        plan_recibos = PlanilhaRecibos(loc=self.__loc_recibos)
         condicao_bd = (
             (where('dt_final').search(f'{COMPETENCIA}')) &
             (where('exportado') == False)
         )
         for dados in TblRecibos.search(condicao_bd):
-            plan_recibos.inserir(registro=dados)
-        plan_recibos.gravar()
+            self.pln_recibos.inserir(registro=dados)
+        # Atualizar dados de pessoas
+        for reg in self.pln_pessoas.registros():
+            self.pln_recibos.atualizar(chave=reg['cpf'], dados=reg)
+        self.pln_recibos.gravar()
         TblRecibos.update({'exportado': True}, cond=condicao_bd)
 
 
 class Recibo(object):
+    titulo_excel_recibo = {
+        'Nome': 'nome',
+        'CPF': 'cpf',
+        'Data de nascimento': 'dt_nascimento',
+        'NIS/PIS': 'nis_pis',
+        'CBO': 'cbo',
+        'Serviço prestado': 'servico_prestado',
+        'Data inicial': 'dt_inicial',
+        'Data final': 'dt_final',
+        'Valor': 'valor',
+        'Dsc. INSS': 'dsc_inss',
+        'Dif. INSS': 'dif_inss',
+        'Dsc. IRRF': 'dsc_irrf',
+        'Dsc. ISS': 'dsc_iss',
+        'Descrição - Outros descontos I': 'outrosd_desc1',
+        'Valor - Outros descontos I': 'outrosd_valor1',
+        'Descrição - Outros descontos II': 'outrosd_desc2',
+        'Valor - Outros descontos II': 'outrosd_valor2',
+        'Líquido': 'v_liquido',
+        'Órgão contratante': 'orgao',
+        'Erros': 'erros',
+    }
+    titulo_recibo_excel = {v: k for k, v in titulo_excel_recibo.items()}
+
     def __init__(self, **dados) -> None:
         self.__erros = []
         self.__dados = dados
@@ -159,7 +167,7 @@ class Recibo(object):
     
     def __limpar_doc(self, cmp: str, cont: int) -> None:
         valor = self.__dados[cmp]
-        cmp_exc = titulo_recibo_excel[cmp]
+        cmp_exc = PlanilhaRecibos.conversor_ao_contrario[cmp]
         if isinstance(valor, str):
             vl_retorno = self.__dados[cmp]
             for caracter in '.-/_':
@@ -183,7 +191,7 @@ class Recibo(object):
                 "NFKD", self.__dados['nome']
                 ).encode(
                     'ASCII', 'ignore'
-                ).decode(),
+                ).decode().upper(),
         })
         # Campos com valores
         for cmp in [
@@ -199,9 +207,13 @@ class Recibo(object):
                 self.__dados[cmp] = valor
         # Campo com datas
         for cmp in ['dt_final', 'dt_inicial', 'dt_nascimento']:
-            valor, erro = normalizar_data(text=self.__dados[cmp])
-            if erro:
-                self.__erros.append(erro)
+            valor = normalizar_data(data=self.__dados[cmp])
+            if valor is None:
+                self.__erros.append(
+                    f"{PlanilhaRecibos.conversor_ao_contrario[cmp]} "
+                    f"ilegível: '{self.__dados[cmp]}'"
+                )
+                self.__dados.update({cmp: ''})
             else:
                 self.__dados.update({cmp: valor})
         # Noemalizar documentos
@@ -221,14 +233,17 @@ class Recibo(object):
             v_liquido -= self.__dados[cmp]
         self.__dados.update({'v_liquido': v_liquido})
         # Outros descontos
-        if self.__dados['outrosd_desc1'] == '0':
+        if self.__dados['outrosd_desc1'] in ['0', 0]:
             self.__dados['outrosd_desc1'] = ''
-        if self.__dados['outrosd_desc2'] == '0':
+        if self.__dados['outrosd_desc2'] in ['0', 0]:
             self.__dados['outrosd_desc2'] = ''
+    
+    def atualizar(self, dados: dict) -> None:
+        self.__dados.update(dados)
     
     def dados_planilha(self) -> dict:
         rec_temp = OrderedDict()
-        for exc, txt in titulo_excel_recibo.items():
+        for exc, txt in PlanilhaRecibos.conversor.items():
             rec_temp[exc] = self.__dados.get(txt, '')
         return list(rec_temp.values())
     
@@ -237,6 +252,37 @@ class Recibo(object):
         for erro in self.__erros:
             erros += erro + ';'
         return erros if len(erros) > 0 else None
+    
+    @classmethod
+    def novo_de_planilha(cls, loc: WindowsPath) -> Optional['Recibo']:
+        book: xlrd.Book = xlrd.open_workbook(loc)
+        sheet: xlrd.sheet.Sheet = book.sheet_by_name('RPA')
+        if sheet.cell_value(rowx=60, colx=0) != 'Responsavel/Tomador do Serviço':
+            logger.error(f"Planilha em '{loc}' não está formatada corretamente.")
+            return None
+        dt_inicial = xlrd.xldate.xldate_as_tuple(sheet.cell_value(rowx=30, colx=1), 0)
+        dt_final = xlrd.xldate.xldate_as_tuple(sheet.cell_value(rowx=30, colx=3), 0)
+        dados = {'qcadastral': 'NÃO', 'erros': '', 'exportado': False}
+        dados['nome'] = sheet.cell_value(rowx=13, colx=1)
+        dados['cpf'] = sheet.cell_value(rowx=16, colx=1)
+        dados['dt_nascimento'] = ''
+        dados['nis_pis'] = sheet.cell_value(rowx=17, colx=1)
+        dados['cbo'] = sheet.cell_value(rowx=28, colx=1)
+        dados['servico_prestado'] = sheet.cell_value(rowx=27, colx=1)
+        dados['dt_inicial'] = '{2:>02}/{1:>02}/{0}'.format(*dt_inicial)
+        dados['dt_final'] = '{2:>02}/{1:>02}/{0}'.format(*dt_final)
+        dados['valor'] = sheet.cell_value(rowx=29, colx=1)
+        dados['dsc_inss'] = sheet.cell_value(rowx=34, colx=1)
+        dados['dsc_irrf'] = sheet.cell_value(rowx=38, colx=1)
+        dados['dsc_iss'] = sheet.cell_value(rowx=40, colx=1)
+        dados['outrosd_desc1'] = sheet.cell_value(rowx=42, colx=0)
+        dados['outrosd_valor1'] = sheet.cell_value(rowx=42, colx=1)
+        dados['outrosd_desc2'] = sheet.cell_value(rowx=43, colx=0)
+        dados['outrosd_valor2'] = sheet.cell_value(rowx=43, colx=1)
+        dados['v_liquido'] = sheet.cell_value(rowx=44, colx=1)
+        dados['orgao'] = sheet.cell_value(rowx=7, colx=1)
+        dados.update()
+        return cls(**dados)
     
     @classmethod
     def novo_de_texto(cls, text: str) -> 'Recibo':
@@ -248,7 +294,7 @@ class Recibo(object):
     
     def salvar(self) -> None:
         pessoa_db = TblPessoas.get(where('cpf')==self.__dados['cpf'])
-        if pessoa_db is None and self.__dados['erros'] == '':
+        if pessoa_db is None:
             TblPessoas.insert(self.__dados_pessoa)
         assinatura_recibo = (str(self.__dados['cbo']) +
             str(self.__dados['cpf']) +
@@ -262,14 +308,20 @@ class Recibo(object):
             TblRecibos.insert(self.__dados)
 
 
+class ObjetoPlanilha(dict):
+    def atualizar(self, dados: dict) -> None:
+        self.update(dados)
+
+
 class Planilha(object):
-    classe: dict
+    classe = ObjetoPlanilha
     conversor: dict
     estilos: dict
     titulo: str
 
     def __init__(self, loc: WindowsPath) -> None:
         self.loc: Final = loc
+        self.__registros: List[ObjetoPlanilha]
         if loc.exists():
             self.__registros = self.__ler()
         else:
@@ -298,6 +350,10 @@ class Planilha(object):
             if dados['cpf'] is not None:
                 registros[dados['cpf']] = self.classe(**dados)
         return registros
+    
+    def atualizar(self, chave: str, dados: dict) -> None:
+        if chave in self.__registros:
+            self.__registros[chave].atualizar(dados)
     
     def dados_gravar(self, reg: dict) -> list:
         return [reg[col] for col in self.conversor.values()]
@@ -399,7 +455,6 @@ class Planilha(object):
 
 
 class PlanilhaPessoas(Planilha):
-    classe = dict
     conversor = {
         'Nome': 'nome',
         'CPF': 'cpf',
@@ -419,7 +474,10 @@ class PlanilhaPessoas(Planilha):
     def gravar_qcadatral(self) -> None:
         with self.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as arq:
             for ps in self.registros():
-                if ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA:
+                if (
+                    ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA and
+                    ps['cpf'] and ps['nis_pis'] and ps['nome'] and ps['dt_nascimento']
+                ):
                     arq.write(
                         f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
                         f"{limpar_doc(ps['dt_nascimento'])}\n"
@@ -458,6 +516,7 @@ class PlanilhaRecibos(Planilha):
         'Órgão contratante': 'orgao',
         'Erros': 'erros',
     }
+    conversor_ao_contrario = {v: k for k, v in conversor.items()}
     estilos = {
         'data': ['Data inicial', 'Data de nascimento', 'Data final'],
         'cpf': ['CPF'],
@@ -491,13 +550,18 @@ def copiar_dict(obj: dict, exc: Optional[List[str]]=None, inc: Optional[List[str
     return rtrn
 
 def limpar_doc(doc_txt: str) -> str:
-    return doc_txt.replace('.', '').replace('-', '').replace('/', '')
+    if isinstance(doc_txt, str):
+        return doc_txt.replace('.', '').replace('-', '').replace('/', '')
+    return ''
 
-def normalizar_data(text: str) -> str:
-    data = text.replace('/', '')
-    if len(data) != 8:
-        return None, f"Data ilegível: {text}"
-    return f"{data[0:2]}/{data[2:4]}/{data[4:8]}", None
+def normalizar_data(data: Union[str,datetime]) -> str:
+    if isinstance(data, datetime):
+        return data.strftime('%d/%m/%Y')
+    elif isinstance(data, str):
+        data = data.replace('/', '')
+        if len(data) == 8 and data.isdigit():
+            return f"{data[0:2]}/{data[2:4]}/{data[4:8]}"
+    return None
 
 def normalizar_valor(valor: str) -> Tuple[Optional[float],Optional[str]]:
     if valor in ['', '0', 0]:

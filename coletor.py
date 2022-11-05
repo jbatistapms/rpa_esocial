@@ -1,7 +1,7 @@
 import csv, decimal, os, sys, unicodedata, uuid
-from datetime import datetime
 from argparse import ArgumentParser
 from collections import defaultdict, OrderedDict
+from datetime import datetime
 from hashlib import md5
 from pathlib import Path, WindowsPath
 from typing import Dict, Final, List, Optional, Tuple, Union
@@ -14,6 +14,7 @@ from openpyxl.styles import Alignment, NamedStyle
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from tinydb import where, TinyDB
+
 load_dotenv()
 
 DIR_DEV = WindowsPath.cwd().joinpath('dev')
@@ -79,6 +80,8 @@ class Coletor(object):
         self.__origem.mkdir(exist_ok=True)
         self.__dir_recibos = self.__origem.joinpath("Recibos")
         self.__dir_recibos.mkdir(exist_ok=True)
+        self.__dir_qcadastral = self.__origem.joinpath("Qualificação cadastral")
+        self.qcadastral = QualificacaoCadastral(dir_ori=self.__dir_qcadastral, pln=None)
     
     def arquivos(self, dir: WindowsPath) -> List[Arquivo]:
         arquivos = []
@@ -94,6 +97,7 @@ class Coletor(object):
     def salvar(self) -> None:
         for arq in self.arquivos(dir=self.__dir_recibos):
             arq.salvar()
+        self.qcadastral.importar()
 
 
 class Controlador(object):
@@ -104,17 +108,20 @@ class Controlador(object):
         self.__loc_recibos = self.__destino.joinpath(f'{ano}.{mes}.xlsx')
         self.pln_pessoas = PlanilhaPessoas(loc=self.__destino.joinpath('Pessoas.xlsx'))
         self.pln_recibos = PlanilhaRecibos(loc=self.__loc_recibos)
+        self.qcadastral = QualificacaoCadastral(dir_ori=None, pln=self.pln_pessoas)
     
     def exportar_pessoas(self) -> None:
         condicao_bd = (
-            (where('comp_inicial') == COMPETENCIA) &
-            (where('exportado') == False)
+            (
+                (where('comp_inicial') == COMPETENCIA) &
+                (where('exportado') == False)
+            ) | (where('qcadastral') != 'NÃO')
         )
         for dados in TblPessoas.search(condicao_bd):
             self.pln_pessoas.inserir(registro=dados)
         self.pln_pessoas.gravar()
-        self.pln_pessoas.gravar_qcadatral()
         TblPessoas.update({'exportado': True}, cond=condicao_bd)
+        self.qcadastral.exportar()
     
     def exportar_recibos(self) -> None:
         condicao_bd = (
@@ -191,7 +198,7 @@ class Recibo(object):
                 "NFKD", self.__dados['nome']
                 ).encode(
                     'ASCII', 'ignore'
-                ).decode().upper(),
+                ).decode().upper().strip(),
         })
         # Campos com valores
         for cmp in [
@@ -419,7 +426,9 @@ class Planilha(object):
         wb.save(self.loc)
     
     def inserir(self, registro: dict) -> None:
-        if not registro['cpf'] in self.__registros:
+        if registro['cpf'] in self.__registros:
+            self.__registros[registro['cpf']].atualizar(registro)
+        else:
             self.__registros[registro['cpf']] = self.classe(**registro)
     
     def registros(self) -> List:
@@ -471,18 +480,6 @@ class PlanilhaPessoas(Planilha):
     }
     titulo = 'Pessoas'
     
-    def gravar_qcadatral(self) -> None:
-        with self.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as arq:
-            for ps in self.registros():
-                if (
-                    ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA and
-                    ps['cpf'] and ps['nis_pis'] and ps['nome'] and ps['dt_nascimento']
-                ):
-                    arq.write(
-                        f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
-                        f"{limpar_doc(ps['dt_nascimento'])}\n"
-                    )
-    
     def tipo_estilos(self) -> List:
         alinhamento_centro = Alignment(horizontal='center')
         centro = NamedStyle(
@@ -533,6 +530,72 @@ class PlanilhaRecibos(Planilha):
     def dados_gravar(self, reg: Recibo) -> dict:
         return reg.dados_planilha()
 
+
+class QualificacaoCadastral(object):
+    def __init__(self, dir_ori: WindowsPath, pln: PlanilhaPessoas) -> None:
+        self.dir_ori = dir_ori
+        self.pln_pessoas = pln
+    
+    def exportar(self) -> None:
+        if self.pln_pessoas is None:
+            logger.warning("Instância de 'PlanilhaPessoas' não foi fornecida.")
+        else:
+            with self.pln_pessoas.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as a:
+                for ps in self.pln_pessoas.registros():
+                    if (
+                        ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA and
+                        ps['cpf'] and ps['nis_pis'] and ps['nome'] and ps['dt_nascimento']
+                    ):
+                        a.write(
+                            f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
+                            f"{limpar_doc(ps['dt_nascimento'])}\n"
+                        )
+    
+    def importar(self) -> None:
+        lst_registros = defaultdict()
+        ids_arqs = []
+        for item in self.dir_ori.iterdir():
+            if item.is_dir() or not item.suffix == 'PROCESSADO':
+                continue
+            id_arq = str(uuid.UUID(md5(item.read_bytes()).hexdigest()))
+            if TblArquivos.get(where('id')==id_arq) is not None:
+                continue
+            arq = item.open('r', newline='\n')
+            arq_csv = csv.DictReader(arq, delimiter=';')
+            for reg in arq_csv:
+                if reg['NOME'] == None:
+                    continue
+                erros = []
+                col_erros = [
+                    'COD_CNIS_CPF',
+                    'COD_CNIS_CPF_NAO_INF',
+                    'COD_CNIS_DN',
+                    'COD_CNIS_NIS',
+                    'COD_CNIS_OBITO',
+                    'COD_CPF_CANCELADO',
+                    'COD_CPF_DN',
+                    'COD_CPF_INV',
+                    'COD_CPF_NAO_CONSTA',
+                    'COD_CPF_NOME',
+                    'COD_CPF_NULO',
+                    'COD_CPF_SUSPENSO',
+                    'COD_DN_INV',
+                    'COD_NIS_INV',
+                    'COD_NOME_INV',
+                    'COD_ORIENTACAO_CPF',
+                    'COD_ORIENTACAO_NIS',
+                ]
+                for cod_erro in col_erros:
+                    if reg[cod_erro] == '0':
+                        erros.append(f'{cod_erro}: {reg[cod_erro]}')
+                if erros:
+                    lst_registros[reg['CPF']] = {'qcadastral': ';'.join(erros), 'exportado': False}
+                else:
+                    lst_registros[reg['CPF']] = {'qcadastral': 'SIM', 'exportado': False}
+            ids_arqs.append(id_arq)
+        for cpf, reg in lst_registros.items():
+            TblPessoas.update(reg, cond=(where('cpf')==cpf))
+        TblArquivos.insert_multiple([{'id': id_} for id_ in ids_arqs])
 
 def copiar_dict(obj: dict, exc: Optional[List[str]]=None, inc: Optional[List[str]]=None) -> dict:
     rtrn = {}

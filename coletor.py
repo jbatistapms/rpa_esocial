@@ -81,6 +81,7 @@ class Coletor(object):
         self.__dir_recibos = self.__origem.joinpath("Recibos")
         self.__dir_recibos.mkdir(exist_ok=True)
         self.__dir_qcadastral = self.__origem.joinpath("Qualificação cadastral")
+        self.__dir_qcadastral.mkdir(exist_ok=True)
         self.qcadastral = QualificacaoCadastral(dir_ori=self.__dir_qcadastral, pln=None)
     
     def arquivos(self, dir: WindowsPath) -> List[Arquivo]:
@@ -542,20 +543,23 @@ class QualificacaoCadastral(object):
         else:
             with self.pln_pessoas.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as a:
                 for ps in self.pln_pessoas.registros():
-                    if (
-                        ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA and
-                        ps['cpf'] and ps['nis_pis'] and ps['nome'] and ps['dt_nascimento']
-                    ):
-                        a.write(
-                            f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
-                            f"{limpar_doc(ps['dt_nascimento'])}\n"
-                        )
+                    if ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA:
+                        if ps['cpf'] and ps['nis_pis'] and ps['nome'] and ps['dt_nascimento']:
+                            a.write(
+                                f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
+                                f"{limpar_doc(ps['dt_nascimento'])}\n"
+                            )
+                        else:
+                            logger.warning(
+                                f"Cadastro de {ps['nome']} está incompleto "
+                                "para qualificação cadastral."
+                            )
     
     def importar(self) -> None:
         lst_registros = defaultdict()
         ids_arqs = []
         for item in self.dir_ori.iterdir():
-            if item.is_dir() or not item.suffix == 'PROCESSADO':
+            if item.is_dir() or not item.suffix == '.PROCESSADO':
                 continue
             id_arq = str(uuid.UUID(md5(item.read_bytes()).hexdigest()))
             if TblArquivos.get(where('id')==id_arq) is not None:
@@ -586,7 +590,7 @@ class QualificacaoCadastral(object):
                     'COD_ORIENTACAO_NIS',
                 ]
                 for cod_erro in col_erros:
-                    if reg[cod_erro] == '0':
+                    if reg[cod_erro] != '0':
                         erros.append(f'{cod_erro}: {reg[cod_erro]}')
                 if erros:
                     lst_registros[reg['CPF']] = {'qcadastral': ';'.join(erros), 'exportado': False}
@@ -594,7 +598,7 @@ class QualificacaoCadastral(object):
                     lst_registros[reg['CPF']] = {'qcadastral': 'SIM', 'exportado': False}
             ids_arqs.append(id_arq)
         for cpf, reg in lst_registros.items():
-            TblPessoas.update(reg, cond=(where('cpf')==cpf))
+            TblPessoas.update(reg, cond=(where('cpf')==int(cpf)))
         TblArquivos.insert_multiple([{'id': id_} for id_ in ids_arqs])
 
 def copiar_dict(obj: dict, exc: Optional[List[str]]=None, inc: Optional[List[str]]=None) -> dict:

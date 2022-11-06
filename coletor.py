@@ -13,7 +13,9 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Alignment, NamedStyle
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
-from tinydb import where, TinyDB
+from tinydb import where
+
+from bd import BancoDeDados
 
 load_dotenv()
 
@@ -21,11 +23,7 @@ DIR_DEV = WindowsPath.cwd().joinpath('dev')
 DIR_DEV.mkdir(exist_ok=True)
 COMPETENCIA = os.getenv('COMPETENCIA') # mm/yyyy
 
-bd = TinyDB(DIR_DEV.joinpath('bd.json'))
-
-TblArquivos = bd.table('arquivos')
-TblPessoas = bd.table('pessoas')
-TblRecibos = bd.table('recibos')
+bd = BancoDeDados()
 
 ctx_decimal = decimal.getcontext()
 ctx_decimal.rounding = decimal.ROUND_HALF_EVEN
@@ -71,7 +69,7 @@ class Arquivo(object):
     def salvar(self) -> None:
         for rec in self.__recibos:
             rec.salvar()
-        TblArquivos.insert({'id': self.id})
+        bd.arquivos.insert({'id': self.id})
     
 
 class Coletor(object):
@@ -91,7 +89,7 @@ class Coletor(object):
                 arquivos += self.arquivos(dir=item)
             else:
                 arquivo = Arquivo(loc=item)
-                if arquivo.id and TblArquivos.get(where('id')==arquivo.id) is None:
+                if arquivo.id and bd.arquivos.get(where('id')==arquivo.id) is None:
                     arquivos.append(arquivo)
         return arquivos
     
@@ -118,10 +116,10 @@ class Controlador(object):
                 (where('exportado') == False)
             ) | (where('qcadastral') != 'NÃO')
         )
-        for dados in TblPessoas.search(condicao_bd):
+        for dados in bd.pessoas.search(condicao_bd):
             self.pln_pessoas.inserir(registro=dados)
         self.pln_pessoas.gravar()
-        TblPessoas.update({'exportado': True}, cond=condicao_bd)
+        bd.pessoas.update({'exportado': True}, cond=condicao_bd)
         self.qcadastral.exportar()
     
     def exportar_recibos(self) -> None:
@@ -129,13 +127,13 @@ class Controlador(object):
             (where('dt_final').search(f'{COMPETENCIA}')) &
             (where('exportado') == False)
         )
-        for dados in TblRecibos.search(condicao_bd):
+        for dados in bd.pessoas.search(condicao_bd):
             self.pln_recibos.inserir(registro=dados)
         # Atualizar dados de pessoas
         for reg in self.pln_pessoas.registros():
             self.pln_recibos.atualizar(chave=reg['cpf'], dados=reg)
         self.pln_recibos.gravar()
-        TblRecibos.update({'exportado': True}, cond=condicao_bd)
+        bd.pessoas.update({'exportado': True}, cond=condicao_bd)
 
 
 class Recibo(object):
@@ -301,9 +299,9 @@ class Recibo(object):
         return cls(**dados)
     
     def salvar(self) -> None:
-        pessoa_db = TblPessoas.get(where('cpf')==self.__dados['cpf'])
+        pessoa_db = bd.pessoas.get(where('cpf')==self.__dados['cpf'])
         if pessoa_db is None:
-            TblPessoas.insert(self.__dados_pessoa)
+            bd.pessoas.insert(self.__dados_pessoa)
         assinatura_recibo = (str(self.__dados['cbo']) +
             str(self.__dados['cpf']) +
             str(self.__dados['dt_final']) +
@@ -311,9 +309,9 @@ class Recibo(object):
             str(self.__dados['valor'])
         )
         self.__dados['id'] = str(uuid.UUID(md5(assinatura_recibo.encode()).hexdigest()))
-        recibo_db = TblRecibos.get(where('id')==self.__dados['id'])
+        recibo_db = bd.pessoas.get(where('id')==self.__dados['id'])
         if recibo_db is None:
-            TblRecibos.insert(self.__dados)
+            bd.pessoas.insert(self.__dados)
 
 
 class ObjetoPlanilha(dict):
@@ -562,7 +560,7 @@ class QualificacaoCadastral(object):
             if item.is_dir() or not item.suffix == '.PROCESSADO':
                 continue
             id_arq = str(uuid.UUID(md5(item.read_bytes()).hexdigest()))
-            if TblArquivos.get(where('id')==id_arq) is not None:
+            if bd.arquivos.get(where('id')==id_arq) is not None:
                 continue
             arq = item.open('r', newline='\n')
             arq_csv = csv.DictReader(arq, delimiter=';')
@@ -598,8 +596,8 @@ class QualificacaoCadastral(object):
                     lst_registros[reg['CPF']] = {'qcadastral': 'SIM', 'exportado': False}
             ids_arqs.append(id_arq)
         for cpf, reg in lst_registros.items():
-            TblPessoas.update(reg, cond=(where('cpf')==int(cpf)))
-        TblArquivos.insert_multiple([{'id': id_} for id_ in ids_arqs])
+            bd.pessoas.update(reg, cond=(where('cpf')==int(cpf)))
+        bd.arquivos.insert_multiple([{'id': id_} for id_ in ids_arqs])
 
 def copiar_dict(obj: dict, exc: Optional[List[str]]=None, inc: Optional[List[str]]=None) -> dict:
     rtrn = {}
@@ -662,13 +660,11 @@ if __name__ == '__main__':
     if args.teste:
         origem = DIR_DEV.joinpath('origem')
         destino = DIR_DEV.joinpath('destino')
+        bd.definir_loc(loc=DIR_DEV.joinpath('bd.json'))
     elif args.producao:
         destino = WindowsPath(os.getenv('DROPBOX_DIR'))
         origem = destino.joinpath('rpa')
-        bd = TinyDB(destino.joinpath('bd.json'))
-        TblArquivos = bd.table('arquivos')
-        TblPessoas = bd.table('pessoas')
-        TblRecibos = bd.table('recibos')
+        bd.definir_loc(loc=destino.joinpath('bd.json'))
     else:
         parser.print_help()
         sys.exit()

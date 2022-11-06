@@ -19,8 +19,6 @@ from bd import BancoDeDados
 
 load_dotenv()
 
-DIR_DEV = WindowsPath.cwd().joinpath('dev')
-DIR_DEV.mkdir(exist_ok=True)
 COMPETENCIA = os.getenv('COMPETENCIA') # mm/yyyy
 
 bd = BancoDeDados()
@@ -658,12 +656,14 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--teste', action='store_true', default=False)
     args = parser.parse_args()
     if args.teste:
-        origem = DIR_DEV.joinpath('origem')
-        destino = DIR_DEV.joinpath('destino')
+        DIR_DEV = WindowsPath.cwd().joinpath('dev')
+        DIR_DEV.mkdir(exist_ok=True)
+        origem = DIR_DEV
+        destino = DIR_DEV
         bd.definir_loc(loc=DIR_DEV.joinpath('bd.json'))
     elif args.producao:
-        destino = WindowsPath(os.getenv('DROPBOX_DIR'))
-        origem = destino.joinpath('rpa')
+        destino = WindowsPath(os.getenv('DESTINO'))
+        origem = destino.joinpath('ORIGEM')
         bd.definir_loc(loc=destino.joinpath('bd.json'))
     else:
         parser.print_help()

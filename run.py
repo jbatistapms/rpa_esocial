@@ -20,14 +20,15 @@ def checar_token(auth) -> bool:
     return token is not None and token.group('token') in tokens_autorizados
 
 def gravar_arquivo(dados: bytes) -> None:
+    uuid_ = uuid.uuid4()
     if debug:
-        with open(f'./dev/{uuid.uuid4()}.txt', 'wb') as arq_csv:
+        with open(f'./dev/Recibos/Api/{uuid_}.txt', 'wb') as arq_csv:
             arq_csv.write(dados)
     else:
         if request.args.get('test', 'Falso') == 'Verdadeiro':
-            dbx.files_upload(request.data, f'/rpa_test/{uuid.uuid4()}_test.txt')
+            dbx.files_upload(request.data, f'/Testes/Recibos/Api/{uuid_}_test.txt')
         else:
-            dbx.files_upload(request.data, f'/rpa/{uuid.uuid4()}.txt')
+            dbx.files_upload(request.data, f'/Recibos/Api/{uuid_}.txt')
 
 @app.route('/', methods=['GET'])
 def home():

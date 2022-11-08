@@ -6,6 +6,7 @@ from hashlib import md5
 from pathlib import Path, WindowsPath
 from typing import Dict, Final, List, Optional, Tuple, Union
 
+import tomlkit
 import xlrd
 from dotenv import load_dotenv
 from loguru import logger
@@ -651,25 +652,33 @@ def salvar_dados(dados: List[dict], dst: Path, fieldnames: Optional[List]=None) 
             arq.write('')
 
 if __name__ == '__main__':
-    parser = ArgumentParser()
-    parser.add_argument('-p', '--producao', action='store_true', default=False)
-    parser.add_argument('-t', '--teste', action='store_true', default=False)
-    args = parser.parse_args()
-    if args.teste:
-        DIR_DEV = WindowsPath.cwd().joinpath('dev')
-        DIR_DEV.mkdir(exist_ok=True)
-        origem = DIR_DEV
-        destino = DIR_DEV
-        bd.definir_loc(loc=DIR_DEV.joinpath('bd.json'))
-    elif args.producao:
-        destino = WindowsPath(os.getenv('DESTINO'))
-        origem = destino.joinpath('ORIGEM')
-        bd.definir_loc(loc=destino.joinpath('bd.json'))
-    else:
-        parser.print_help()
-        sys.exit()
+    # Ler perfis
+    with open('./perfis.toml') as f:
+        cfg = tomlkit.parse(f.read())
+    perfis = cfg['perfis']
     
-    logger.add(DIR_DEV.joinpath('coletor.log'), level='INFO')
+    # Processar argumentos de linha de comando
+    parser = ArgumentParser()
+    parser.add_argument('-p', '--perfil', action='store', type=str, choices=list(perfis.keys()))
+    args = parser.parse_args()
+
+    if args.perfil and not os.getenv('DEBUG') == '1':
+        perfil = perfis[args.perfil]
+        base = WindowsPath(perfil['base'])
+        base.mkdir(exist_ok=True)
+        destino = WindowsPath(perfil['destino'])
+        origem = WindowsPath(perfil['origem'])
+        bd.definir_loc(loc=base.joinpath('bd.json'))
+        logger.add(base.joinpath('coletor.log'), level='INFO')
+        logger.info(f"Processamento iniciado no perfil '{args.perfil}'.")
+    else:
+        base = WindowsPath.cwd().joinpath('dev')
+        base.mkdir(exist_ok=True)
+        origem = base
+        destino = base
+        bd.definir_loc(loc=base.joinpath('bd.json'))
+        logger.add(base.joinpath('coletor.log'), level='INFO')
+        logger.info(f"Processamento iniciado no modo de desenvolvimento.")
 
     colt = Coletor(origem=origem)
     colt.salvar()

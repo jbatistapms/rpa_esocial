@@ -668,7 +668,7 @@ if __name__ == '__main__':
         base.mkdir(exist_ok=True)
         destino = WindowsPath(perfil['destino'])
         origem = WindowsPath(perfil['origem'])
-        bd.definir_loc(loc=base.joinpath('bd.json'))
+        bd.definir_loc(loc=base.joinpath(f'bd.{args.perfil}.json'))
         logger.add(base.joinpath('coletor.log'), level='INFO')
         logger.info(f"Processamento iniciado no perfil '{args.perfil}'.")
     else:
@@ -676,7 +676,7 @@ if __name__ == '__main__':
         base.mkdir(exist_ok=True)
         origem = base
         destino = base
-        bd.definir_loc(loc=base.joinpath('bd.json'))
+        bd.definir_loc(loc=base.joinpath('bd.dev.json'))
         logger.add(base.joinpath('coletor.log'), level='INFO')
         logger.info(f"Processamento iniciado no modo de desenvolvimento.")
 

@@ -126,13 +126,13 @@ class Controlador(object):
             (where('dt_final').search(f'{COMPETENCIA}')) &
             (where('exportado') == False)
         )
-        for dados in bd.pessoas.search(condicao_bd):
+        for dados in bd.recibos.search(condicao_bd):
             self.pln_recibos.inserir(registro=dados)
         # Atualizar dados de pessoas
         for reg in self.pln_pessoas.registros():
             self.pln_recibos.atualizar(chave=reg['cpf'], dados=reg)
         self.pln_recibos.gravar()
-        bd.pessoas.update({'exportado': True}, cond=condicao_bd)
+        bd.recibos.update({'exportado': True}, cond=condicao_bd)
 
 
 class Recibo(object):
@@ -181,7 +181,7 @@ class Recibo(object):
                 valor = int(vl_retorno)
             else:
                 self.__erros.append(f"Número de '{cmp_exc}' deve possuir {cont} dígitos: {valor}")
-        elif isinstance(valor, int):
+        elif isinstance(valor, (int, float)):
             if not valor < 10**cont:
                 self.__erros.append(f"Número de '{cmp_exc}' deve possuir {cont} dígitos: {valor}")
         else:
@@ -308,9 +308,9 @@ class Recibo(object):
             str(self.__dados['valor'])
         )
         self.__dados['id'] = str(uuid.UUID(md5(assinatura_recibo.encode()).hexdigest()))
-        recibo_db = bd.pessoas.get(where('id')==self.__dados['id'])
+        recibo_db = bd.recibos.get(where('id')==self.__dados['id'])
         if recibo_db is None:
-            bd.pessoas.insert(self.__dados)
+            bd.recibos.insert(self.__dados)
 
 
 class ObjetoPlanilha(dict):

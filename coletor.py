@@ -541,10 +541,10 @@ class QualificacaoCadastral(object):
             with self.pln_pessoas.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as a:
                 for ps in self.pln_pessoas.registros():
                     if ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA:
-                        if ps['cpf'] and ps['nis_pis'] and ps['nome'] and ps['dt_nascimento']:
+                        if ps['cpf'] and ps['nome'] and ps['dt_nascimento']:
                             a.write(
-                                f"{ps['cpf']:>011};{ps['nis_pis']:>011};{ps['nome']};"
-                                f"{limpar_doc(ps['dt_nascimento'])}\n"
+                                f"{ps['cpf']:>011};13333333332;{ps['nome']};"
+                                f"{limpar_data(ps['dt_nascimento'])}\n"
                             )
                         else:
                             logger.warning(
@@ -617,6 +617,14 @@ def limpar_doc(doc_txt: str) -> str:
     if isinstance(doc_txt, str):
         return doc_txt.replace('.', '').replace('-', '').replace('/', '')
     return ''
+
+def limpar_data(dt: Union[str, datetime]) -> str:
+    if isinstance(dt, str):
+        return dt.replace('.', '').replace('-', '').replace('/', '')
+    elif isinstance(dt, datetime):
+        return dt.strftime('%d%m%Y')
+    else:
+        raise ValueError("Parâmetro 'dt' deve ser do tipo str ou datetime.")
 
 def normalizar_data(data: Union[str,datetime]) -> str:
     if isinstance(data, datetime):

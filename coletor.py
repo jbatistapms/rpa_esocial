@@ -425,6 +425,7 @@ class Planilha(object):
     
     def inserir(self, registro: dict) -> None:
         if registro['cpf'] in self.__registros:
+            logger.debug(f"Atualizando registro de cpf nº {registro['cpf']:>011}")
             self.__registros[registro['cpf']].atualizar(registro)
         else:
             self.__registros[registro['cpf']] = self.classe(**registro)
@@ -458,7 +459,11 @@ class Planilha(object):
             number_format='000"."00000"."00"-"0',
             alignment=alinhamento_centro,
         )
-        return [cbo, cpf, data, moeda, nit]
+        centro = NamedStyle(
+            name='centro',
+            alignment=alinhamento_centro,
+        )
+        return [cbo, cpf, data, moeda, nit, centro]
 
 
 class PlanilhaPessoas(Planilha):
@@ -477,14 +482,6 @@ class PlanilhaPessoas(Planilha):
         'centro': ['QCadastral', 'Competência Inicial']
     }
     titulo = 'Pessoas'
-    
-    def tipo_estilos(self) -> List:
-        alinhamento_centro = Alignment(horizontal='center')
-        centro = NamedStyle(
-            name='centro',
-            alignment=alinhamento_centro,
-        )
-        return super().tipo_estilos() + [centro]
 
 
 class PlanilhaRecibos(Planilha):
@@ -510,6 +507,15 @@ class PlanilhaRecibos(Planilha):
         'Líquido': 'v_liquido',
         'Órgão contratante': 'orgao',
         'Erros': 'erros',
+        'Enviar': 'enviar',
+        'ID S-1200': 'id_s1200',
+        'Protocolo de envio S-1200': 'protocolo_s1200',
+        'Recibo de envio S-1200': 'recibo_s1200',
+        'Erro no envio S-1200': 'erro_s1200',
+        'ID S-1210': 'id_s1210',
+        'Protocolo de envio S-1210': 'protocolo_s1210',
+        'Recibo de envio S-1210': 'recibo_s1210',
+        'Erro no envio S-1210': 'erro_s1210',
     }
     conversor_ao_contrario = {v: k for k, v in conversor.items()}
     estilos = {
@@ -522,6 +528,10 @@ class PlanilhaRecibos(Planilha):
             'Valor - Outros descontos I', 'Valor - Outros descontos II',
             'Líquido'
         ],
+        'centro': [
+            'Enviar', 'ID S-1200', 'Protocolo de envio S-1200', 'Recibo de envio S-1200',
+            'ID S-1210', 'Protocolo de envio S-1210', 'Recibo de envio S-1210',
+        ]
     }
     titulo = 'Recibos'
     
@@ -553,7 +563,24 @@ class QualificacaoCadastral(object):
                             )
     
     def importar(self) -> None:
-        lst_registros = defaultdict()
+        col_erros = [
+            'COD_CNIS_CPF',
+            'COD_CNIS_CPF_NAO_INF',
+            'COD_CNIS_DN',
+            'COD_CNIS_NIS',
+            'COD_CNIS_OBITO',
+            'COD_CPF_CANCELADO',
+            'COD_CPF_DN',
+            'COD_CPF_INV',
+            'COD_CPF_NAO_CONSTA',
+            'COD_CPF_NOME',
+            'COD_CPF_NULO',
+            'COD_CPF_SUSPENSO',
+            'COD_DN_INV',
+            'COD_NIS_INV',
+            'COD_NOME_INV',
+        ]
+        lst_registros = defaultdict(dict)
         ids_arqs = []
         for item in self.dir_ori.iterdir():
             if item.is_dir() or not item.suffix == '.PROCESSADO':
@@ -566,31 +593,20 @@ class QualificacaoCadastral(object):
             for reg in arq_csv:
                 if reg['NOME'] == None:
                     continue
-                erros = []
-                col_erros = [
-                    'COD_CNIS_CPF',
-                    'COD_CNIS_CPF_NAO_INF',
-                    'COD_CNIS_DN',
-                    'COD_CNIS_NIS',
-                    'COD_CNIS_OBITO',
-                    'COD_CPF_CANCELADO',
-                    'COD_CPF_DN',
-                    'COD_CPF_INV',
-                    'COD_CPF_NAO_CONSTA',
-                    'COD_CPF_NOME',
-                    'COD_CPF_NULO',
-                    'COD_CPF_SUSPENSO',
-                    'COD_DN_INV',
-                    'COD_NIS_INV',
-                    'COD_NOME_INV',
-                    'COD_ORIENTACAO_CPF',
-                    'COD_ORIENTACAO_NIS',
-                ]
+                erros = defaultdict()
                 for cod_erro in col_erros:
                     if reg[cod_erro] != '0':
-                        erros.append(f'{cod_erro}: {reg[cod_erro]}')
+                        erros[cod_erro] = reg[cod_erro]
+                # Correção de nome
+                nome = reg['COD_CPF_NOME']
+                if nome != '0' and nome.startswith('1 - ') and nome[4:] != '':
+                    lst_registros[reg['CPF']]['nome'] = nome[4:]
+                    erros.pop('COD_CPF_NOME')
                 if erros:
-                    lst_registros[reg['CPF']] = {'qcadastral': ';'.join(erros), 'exportado': False}
+                    lst_registros[reg['CPF']] = {
+                        'qcadastral': ';'.join([f'{cod}: {err}' for cod, err in erros.items()]),
+                        'exportado': False,
+                    }
                 else:
                     lst_registros[reg['CPF']] = {'qcadastral': 'SIM', 'exportado': False}
             ids_arqs.append(id_arq)

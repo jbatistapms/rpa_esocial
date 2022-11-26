@@ -1,5 +1,4 @@
 from pathlib import WindowsPath
-import sys
 from tinydb import TinyDB
 from tinydb.table import Table
 

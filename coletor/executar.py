@@ -677,7 +677,7 @@ def salvar_dados(dados: List[dict], dst: Path, fieldnames: Optional[List]=None) 
 
 if __name__ == '__main__':
     # Ler perfis
-    with open('./perfis.toml') as f:
+    with WindowsPath(__file__).parent.joinpath('./perfis.toml').open() as f:
         cfg = tomlkit.parse(f.read())
     perfis = cfg['perfis']
     

@@ -49,6 +49,16 @@ class Arquivo(object):
             if recibo:
                 self.id = str(uuid.UUID(md5(loc.read_bytes()).hexdigest()))
                 self.__recibos.append(recibo)
+        elif '.fmss' in loc.suffixes and loc.suffix == '.csv':
+            ano, mes, _ = loc.stem.split('.')
+            with loc.open() as arq:
+                csv_arq = csv.DictReader(arq, delimiter=';')
+                for linha in csv_arq:
+                    self.__recibos.append(Recibo.novo_de_csv(
+                        dados=linha,
+                        dt_base=f"01/{mes}/{ano}"
+                    ))
+                    self.id = str(uuid.UUID(md5(loc.read_bytes()).hexdigest()))
     
     def __repr__(self) -> str:
         return repr(self.__loc)
@@ -136,30 +146,6 @@ class Controlador(object):
 
 
 class Recibo(object):
-    titulo_excel_recibo = {
-        'Nome': 'nome',
-        'CPF': 'cpf',
-        'Data de nascimento': 'dt_nascimento',
-        'NIS/PIS': 'nis_pis',
-        'CBO': 'cbo',
-        'Serviço prestado': 'servico_prestado',
-        'Data inicial': 'dt_inicial',
-        'Data final': 'dt_final',
-        'Valor': 'valor',
-        'Dsc. INSS': 'dsc_inss',
-        'Dif. INSS': 'dif_inss',
-        'Dsc. IRRF': 'dsc_irrf',
-        'Dsc. ISS': 'dsc_iss',
-        'Descrição - Outros descontos I': 'outrosd_desc1',
-        'Valor - Outros descontos I': 'outrosd_valor1',
-        'Descrição - Outros descontos II': 'outrosd_desc2',
-        'Valor - Outros descontos II': 'outrosd_valor2',
-        'Líquido': 'v_liquido',
-        'Órgão contratante': 'orgao',
-        'Erros': 'erros',
-    }
-    titulo_recibo_excel = {v: k for k, v in titulo_excel_recibo.items()}
-
     def __init__(self, **dados) -> None:
         self.__erros = []
         self.__dados = dados
@@ -259,6 +245,33 @@ class Recibo(object):
         return erros if len(erros) > 0 else None
     
     @classmethod
+    def __novo_dados_padrao(cls) -> dict:
+        return {'qcadastral': 'NÃO', 'erros': '', 'exportado': False}
+    
+    @classmethod
+    def novo_de_csv(cls, dados: dict, dt_base: str) -> 'Recibo':
+        registro = cls.__novo_dados_padrao()
+        registro['nome'] = dados['Prestador de serviço']
+        registro['cpf'] = dados['CNPJ/CPF']
+        registro['dt_nascimento'] = dados['D. Nasc.']
+        registro['nis_pis'] = dados['NIS']
+        registro['cbo'] = dados['CBO']
+        registro['servico_prestado'] = ''
+        registro['dt_inicial'] = dt_base
+        registro['dt_final'] = dt_base
+        registro['valor'] = dados['BRUTO']
+        registro['dsc_inss'] = dados['INSS']
+        registro['dsc_irrf'] = dados['IRRF']
+        registro['dsc_iss'] = dados['ISS']
+        registro['outrosd_desc1'] = '0'
+        registro['outrosd_valor1'] = '0'
+        registro['outrosd_desc2'] = '0'
+        registro['outrosd_valor2'] = '0'
+        registro['v_liquido'] = dados['Líquido']
+        registro['orgao'] = 'Fundo Municipal de Saúde de Sapucaia'
+        return cls(**registro)
+    
+    @classmethod
     def novo_de_planilha(cls, loc: WindowsPath) -> Optional['Recibo']:
         book: xlrd.Book = xlrd.open_workbook(loc)
         sheet: xlrd.sheet.Sheet = book.sheet_by_name('RPA')
@@ -267,7 +280,7 @@ class Recibo(object):
             return None
         dt_inicial = xlrd.xldate.xldate_as_tuple(sheet.cell_value(rowx=30, colx=1), 0)
         dt_final = xlrd.xldate.xldate_as_tuple(sheet.cell_value(rowx=30, colx=3), 0)
-        dados = {'qcadastral': 'NÃO', 'erros': '', 'exportado': False}
+        dados = cls.__novo_dados_padrao()
         dados['nome'] = sheet.cell_value(rowx=13, colx=1)
         dados['cpf'] = sheet.cell_value(rowx=16, colx=1)
         dados['dt_nascimento'] = ''
@@ -286,12 +299,11 @@ class Recibo(object):
         dados['outrosd_valor2'] = sheet.cell_value(rowx=43, colx=1)
         dados['v_liquido'] = sheet.cell_value(rowx=44, colx=1)
         dados['orgao'] = sheet.cell_value(rowx=7, colx=1)
-        dados.update()
         return cls(**dados)
     
     @classmethod
     def novo_de_texto(cls, text: str) -> 'Recibo':
-        dados = {'qcadastral': 'NÃO', 'erros': '', 'exportado': False}
+        dados = cls.__novo_dados_padrao()
         for ch_vl in text.split('«')[:-1]:
             ch, vl = ch_vl.split('»')
             dados.update({ch: vl})
@@ -322,6 +334,7 @@ class Planilha(object):
     classe = ObjetoPlanilha
     conversor: dict
     estilos: dict
+    identificador: str
     titulo: str
 
     def __init__(self, loc: WindowsPath) -> None:
@@ -424,11 +437,8 @@ class Planilha(object):
         wb.save(self.loc)
     
     def inserir(self, registro: dict) -> None:
-        if registro['cpf'] in self.__registros:
-            logger.debug(f"Atualizando registro de cpf nº {registro['cpf']:>011}")
-            self.__registros[registro['cpf']].atualizar(registro)
-        else:
-            self.__registros[registro['cpf']] = self.classe(**registro)
+        if not registro[self.identificador] in self.__registros:
+            self.__registros[registro[self.identificador]] = self.classe(**registro)
     
     def registros(self) -> List:
         return list(self.__registros.values())
@@ -481,12 +491,14 @@ class PlanilhaPessoas(Planilha):
         'nit': ['NIS/PIS'],
         'centro': ['QCadastral', 'Competência Inicial']
     }
+    identificador = 'cpf'
     titulo = 'Pessoas'
 
 
 class PlanilhaRecibos(Planilha):
     classe = Recibo
     conversor = {
+        'Identificador': 'id',
         'Nome': 'nome',
         'CPF': 'cpf',
         'Data de nascimento': 'dt_nascimento',
@@ -531,8 +543,10 @@ class PlanilhaRecibos(Planilha):
         'centro': [
             'Enviar', 'ID S-1200', 'Protocolo de envio S-1200', 'Recibo de envio S-1200',
             'ID S-1210', 'Protocolo de envio S-1210', 'Recibo de envio S-1210',
+            'Identificador'
         ]
     }
+    identificador = 'id'
     titulo = 'Recibos'
     
     def dados_gravar(self, reg: Recibo) -> dict:

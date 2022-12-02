@@ -2,9 +2,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
 from xsdata.models.datatype import XmlDate
-from leiautes.S_1_0 import tipos
-from leiautes.S_1_0.tipos import TIdeEventoFolha
-from xsd_s_1_0.xmldsig_core_schema import Signature
+
+from . import tipos
+from .xmldsig_core_schema import Signature
 
 __NAMESPACE__ = "http://www.esocial.gov.br/schema/evt/evtPgtos/v_S_01_00_00"
 
@@ -78,7 +78,7 @@ class Evento:
             CHAVE_GRUPO: {cpfBenef*}
         :ivar id:
         """
-        ide_evento: Optional[TIdeEventoFolha] = field(
+        ide_evento: Optional[tipos.TIdeEventoFolha] = field(
             default=None,
             metadata={
                 "name": "ideEvento",

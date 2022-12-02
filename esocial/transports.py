@@ -7,7 +7,7 @@ from M2Crypto import m2urllib2 as urllib2
 from suds.transport.http import HttpTransport
 from xsdata.formats.dataclass.transports import DefaultTransport
 
-import token
+from . import token
 
 
 class HttpTransportSuds(HttpTransport):

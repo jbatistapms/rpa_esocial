@@ -1,4 +1,4 @@
-import core
+from esocial import core
 
 if core.VERSAO_LEIAUTE == 'S_1_1':
     from .S_1_1 import tipos

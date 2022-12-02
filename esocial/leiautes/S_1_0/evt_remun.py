@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 from xsdata.models.datatype import XmlDate
-from leiautes.S_1_0.tipos import TIdeEmpregador, TIdeEventoFolha
-from xsd_s_1_0.xmldsig_core_schema import Signature
+
+from . import tipos
+from .xmldsig_core_schema import Signature
 
 __NAMESPACE__ = "http://www.esocial.gov.br/schema/evt/evtRemun/v_S_01_00_00"
 
@@ -178,7 +179,7 @@ class Evento:
             CHAVE_GRUPO: {ideDmDev} REGRA:REGRA_DEMONSTRATIVO
         :ivar id:
         """
-        ide_evento: Optional[TIdeEventoFolha] = field(
+        ide_evento: Optional[tipos.TIdeEventoFolha] = field(
             default=None,
             metadata={
                 "name": "ideEvento",
@@ -186,7 +187,7 @@ class Evento:
                 "required": True,
             }
         )
-        ide_empregador: Optional[TIdeEmpregador] = field(
+        ide_empregador: Optional[tipos.TIdeEmpregador] = field(
             default=None,
             metadata={
                 "name": "ideEmpregador",

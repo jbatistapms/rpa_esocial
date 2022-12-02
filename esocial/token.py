@@ -1,4 +1,5 @@
 import os, sys
+from pathlib import WindowsPath
 from pprint import pprint
 
 import pkcs11, signxml
@@ -6,7 +7,7 @@ from lxml import etree
 from M2Crypto import m2, Engine, SSL
 from M2Crypto import m2urllib2 as urllib2
 
-import core
+from . import core
 
 id_ = 'pkcs11'
 MODULE_PATH = os.getenv('MODULE_PATH')
@@ -18,7 +19,10 @@ TOKEN_SLOT = os.getenv('TOKEN_SLOT')
 
 sys.path.append(OPENSLL_DIR)
 
-engine = Engine.load_dynamic_engine(id_, os.path.join(os.getcwd(), "pkcs11.dll"))
+engine = Engine.load_dynamic_engine(
+    id_,
+    str(WindowsPath(__file__).parent.joinpath("pacotes", "pkcs11.dll"))
+)
 ssl_engine = Engine.Engine(id_)
 ssl_engine.ctrl_cmd_string("MODULE_PATH", MODULE_PATH)
 #ssl_engine.ctrl_cmd_string("PIN", TOKEN_PIN)

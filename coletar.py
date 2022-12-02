@@ -1,12 +1,10 @@
 import csv, decimal, os, sys, unicodedata, uuid
-from argparse import ArgumentParser
 from collections import defaultdict, OrderedDict
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path, WindowsPath
 from typing import Dict, Final, List, Optional, Tuple, Union
 
-import tomlkit
 import xlrd
 from dotenv import load_dotenv
 from loguru import logger
@@ -16,13 +14,11 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from tinydb import where
 
-from bd import BancoDeDados
+from core import bd, destino, origem
 
 load_dotenv()
 
 COMPETENCIA = os.getenv('COMPETENCIA') # mm/yyyy
-
-bd = BancoDeDados()
 
 ctx_decimal = decimal.getcontext()
 ctx_decimal.rounding = decimal.ROUND_HALF_EVEN
@@ -119,16 +115,24 @@ class Controlador(object):
         self.qcadastral = QualificacaoCadastral(dir_ori=None, pln=self.pln_pessoas)
     
     def exportar_pessoas(self) -> None:
+        # Exportando novas pessoas
         condicao_bd = (
-            (
-                (where('comp_inicial') == COMPETENCIA) &
-                (where('exportado') == False)
-            ) | (where('qcadastral') != 'NÃO')
+            (where('comp_inicial') == COMPETENCIA) &
+            (where('exportado') == False)
         )
         for dados in bd.pessoas.search(condicao_bd):
             self.pln_pessoas.inserir(registro=dados)
         self.pln_pessoas.gravar()
         bd.pessoas.update({'exportado': True}, cond=condicao_bd)
+        # Exportando atualização de pessoas
+        condicao_bd = (
+            (where('atualizado') == True) &
+            (where('exportado') == True)
+        )
+        for dados in bd.pessoas.search(condicao_bd):
+            self.pln_pessoas.atualizar(dados['cpf'], dados=dados)
+        self.pln_pessoas.gravar()
+        bd.pessoas.update({'atualizado': False}, cond=condicao_bd)
         self.qcadastral.exportar()
     
     def exportar_recibos(self) -> None:
@@ -140,27 +144,27 @@ class Controlador(object):
             self.pln_recibos.inserir(registro=dados)
         # Atualizar dados de pessoas
         for reg in self.pln_pessoas.registros():
-            self.pln_recibos.atualizar(chave=reg['cpf'], dados=reg)
+            self.pln_recibos.atualizar_cpf(cpf=reg['cpf'], dados=reg)
         self.pln_recibos.gravar()
         bd.recibos.update({'exportado': True}, cond=condicao_bd)
 
 
-class Recibo(object):
+class Recibo(dict):
     def __init__(self, **dados) -> None:
+        super().__init__(dados)
         self.__erros = []
-        self.__dados = dados
         self.__tratar_dados()
         self.__dados_pessoa = copiar_dict(
-            obj=self.__dados,
+            obj=self,
             inc=['cpf', 'dt_nascimento', 'nis_pis', 'nome', 'qcadastral', 'exportado']
         )
-        self.__dados_pessoa['comp_inicial'] = self.__dados['dt_inicial'][3:]
+        self.__dados_pessoa['comp_inicial'] = self['dt_inicial'][3:]
     
     def __limpar_doc(self, cmp: str, cont: int) -> None:
-        valor = self.__dados[cmp]
+        valor = self[cmp]
         cmp_exc = PlanilhaRecibos.conversor_ao_contrario[cmp]
         if isinstance(valor, str):
-            vl_retorno = self.__dados[cmp]
+            vl_retorno = self[cmp]
             for caracter in '.-/_':
                 vl_retorno = vl_retorno.replace(caracter, '')
             if vl_retorno.isdigit() and len(vl_retorno) == cont:
@@ -172,14 +176,14 @@ class Recibo(object):
                 self.__erros.append(f"Número de '{cmp_exc}' deve possuir {cont} dígitos: {valor}")
         else:
             self.__erros.append(f"Número de '{cmp_exc}' não reconhecido: {valor}")
-        self.__dados[cmp] = valor
+        self[cmp] = valor
 
     def __tratar_dados(self) -> dict:
-        self.__dados['erros'] = ''
+        self['erros'] = ''
         self.__erros = []
-        self.__dados.update({
+        self.update({
             'nome': unicodedata.normalize(
-                "NFKD", self.__dados['nome']
+                "NFKD", self['nome']
                 ).encode(
                     'ASCII', 'ignore'
                 ).decode().upper().strip(),
@@ -189,53 +193,53 @@ class Recibo(object):
                 'dsc_inss', 'dsc_irrf', 'dsc_iss', 'valor', 'v_liquido', 
                 'outrosd_valor1', 'outrosd_valor2'
             ]:
-            if self.__dados[cmp] == '':
-                self.__dados[cmp] = 0
-            valor, erro = normalizar_valor(valor=self.__dados[cmp])
+            if self[cmp] == '':
+                self[cmp] = 0
+            valor, erro = normalizar_valor(valor=self[cmp])
             if erro:
                 self.__erros.append(erro)
             else:
-                self.__dados[cmp] = valor
+                self[cmp] = valor
         # Campo com datas
         for cmp in ['dt_final', 'dt_inicial', 'dt_nascimento']:
-            valor = normalizar_data(data=self.__dados[cmp])
+            valor = normalizar_data(data=self[cmp])
             if valor is None:
                 self.__erros.append(
                     f"{PlanilhaRecibos.conversor_ao_contrario[cmp]} "
-                    f"ilegível: '{self.__dados[cmp]}'"
+                    f"ilegível: '{self[cmp]}'"
                 )
-                self.__dados.update({cmp: ''})
+                self.update({cmp: ''})
             else:
-                self.__dados.update({cmp: valor})
+                self.update({cmp: valor})
         # Noemalizar documentos
         self.__limpar_doc(cmp='nis_pis', cont=11)
         self.__limpar_doc(cmp='cpf', cont=11)
         self.__limpar_doc(cmp='cbo', cont=6)
         for erro in self.__erros:
-            self.__dados['erros'] += erro + ';'
+            self['erros'] += erro + ';'
         # Diferença INSS
-        valor = decimal.Decimal(self.__dados['valor'])
+        valor = decimal.Decimal(self['valor'])
         inss = valor * decimal.Decimal('0.11')
         inss = float(inss.quantize(decimal.Decimal('1.00')))
-        self.__dados.update({'dif_inss': self.__dados['dsc_inss'] - inss})
+        self.update({'dif_inss': self['dsc_inss'] - inss})
         # Valor líquido
-        v_liquido = self.__dados['valor']
+        v_liquido = self['valor']
         for cmp in ['dsc_inss', 'dsc_irrf', 'dsc_iss', 'outrosd_valor1', 'outrosd_valor2']:
-            v_liquido -= self.__dados[cmp]
-        self.__dados.update({'v_liquido': v_liquido})
+            v_liquido -= self[cmp]
+        self.update({'v_liquido': v_liquido})
         # Outros descontos
-        if self.__dados['outrosd_desc1'] in ['0', 0]:
-            self.__dados['outrosd_desc1'] = ''
-        if self.__dados['outrosd_desc2'] in ['0', 0]:
-            self.__dados['outrosd_desc2'] = ''
+        if self['outrosd_desc1'] in ['0', 0]:
+            self['outrosd_desc1'] = ''
+        if self['outrosd_desc2'] in ['0', 0]:
+            self['outrosd_desc2'] = ''
     
     def atualizar(self, dados: dict) -> None:
-        self.__dados.update(dados)
+        self.update(dados)
     
     def dados_planilha(self) -> dict:
         rec_temp = OrderedDict()
         for exc, txt in PlanilhaRecibos.conversor.items():
-            rec_temp[exc] = self.__dados.get(txt, '')
+            rec_temp[exc] = self.get(txt, '')
         return list(rec_temp.values())
     
     def erros(self) -> str:
@@ -310,19 +314,19 @@ class Recibo(object):
         return cls(**dados)
     
     def salvar(self) -> None:
-        pessoa_db = bd.pessoas.get(where('cpf')==self.__dados['cpf'])
+        pessoa_db = bd.pessoas.get(where('cpf')==self['cpf'])
         if pessoa_db is None:
             bd.pessoas.insert(self.__dados_pessoa)
-        assinatura_recibo = (str(self.__dados['cbo']) +
-            str(self.__dados['cpf']) +
-            str(self.__dados['dt_final']) +
-            str(self.__dados['orgao']) +
-            str(self.__dados['valor'])
+        assinatura_recibo = (str(self['cbo']) +
+            str(self['cpf']) +
+            str(self['dt_final']) +
+            str(self['orgao']) +
+            str(self['valor'])
         )
-        self.__dados['id'] = str(uuid.UUID(md5(assinatura_recibo.encode()).hexdigest()))
-        recibo_db = bd.recibos.get(where('id')==self.__dados['id'])
+        self['id'] = str(uuid.UUID(md5(assinatura_recibo.encode()).hexdigest()))
+        recibo_db = bd.recibos.get(where('id')==self['id'])
         if recibo_db is None:
-            bd.recibos.insert(self.__dados)
+            bd.recibos.insert(self)
 
 
 class ObjetoPlanilha(dict):
@@ -341,11 +345,11 @@ class Planilha(object):
         self.loc: Final = loc
         self.__registros: List[ObjetoPlanilha]
         if loc.exists():
-            self.__registros = self.__ler()
+            self.__ler()
         else:
             self.__registros = defaultdict(dict)
     
-    def __ler(self) -> List[Dict]:
+    def __ler(self) -> None:
         wb = load_workbook(self.loc)
         ws = wb[self.titulo]
         lista_linhas = []
@@ -355,7 +359,7 @@ class Planilha(object):
                 linha.append(cell.value)
             lista_linhas.append(linha)
         cabecalho = lista_linhas.pop(0)
-        registros = defaultdict()
+        self.__registros = defaultdict()
         for linha in lista_linhas:
             dados = defaultdict()
             for exc, txt in self.conversor.items():
@@ -365,9 +369,8 @@ class Planilha(object):
                     logger.error(f"Coluna {exc} inexistente em {self.loc}")
                     sys.exit()
                 dados[txt] = linha[idx]
-            if dados['cpf'] is not None:
-                registros[dados['cpf']] = self.classe(**dados)
-        return registros
+            if dados[self.identificador]:
+                self.__registros[dados[self.identificador]] = self.classe(**dados)
     
     def atualizar(self, chave: str, dados: dict) -> None:
         if chave in self.__registros:
@@ -518,8 +521,10 @@ class PlanilhaRecibos(Planilha):
         'Valor - Outros descontos II': 'outrosd_valor2',
         'Líquido': 'v_liquido',
         'Órgão contratante': 'orgao',
+        'Data do pagamento': 'dt_pgto',
         'Erros': 'erros',
         'Enviar': 'enviar',
+        'Demonstrativo': 'demonstrativo',
         'ID S-1200': 'id_s1200',
         'Protocolo de envio S-1200': 'protocolo_s1200',
         'Recibo de envio S-1200': 'recibo_s1200',
@@ -543,11 +548,21 @@ class PlanilhaRecibos(Planilha):
         'centro': [
             'Enviar', 'ID S-1200', 'Protocolo de envio S-1200', 'Recibo de envio S-1200',
             'ID S-1210', 'Protocolo de envio S-1210', 'Recibo de envio S-1210',
-            'Identificador'
+            'Identificador', 'Demonstrativo', 'Data do pagamento',
         ]
     }
     identificador = 'id'
     titulo = 'Recibos'
+
+    def __init__(self, loc: WindowsPath) -> None:
+        super().__init__(loc)
+        self.__indice_cpf = defaultdict(list)
+        for reg in self.registros():
+            self.__indice_cpf[reg['cpf']].append(reg['id'])
+
+    def atualizar_cpf(self, cpf: str, dados: dict) -> None:
+        for id_ in self.__indice_cpf.get(cpf, []):
+            self.atualizar(id_, dados)
     
     def dados_gravar(self, reg: Recibo) -> dict:
         return reg.dados_planilha()
@@ -577,6 +592,7 @@ class QualificacaoCadastral(object):
                             )
     
     def importar(self) -> None:
+        logger.info("Iniciando importação de retornos de qualificação cadastral.")
         col_erros = [
             'COD_CNIS_CPF',
             'COD_CNIS_CPF_NAO_INF',
@@ -602,6 +618,7 @@ class QualificacaoCadastral(object):
             id_arq = str(uuid.UUID(md5(item.read_bytes()).hexdigest()))
             if bd.arquivos.get(where('id')==id_arq) is not None:
                 continue
+            logger.info(f"Novo arquivo encontrado em {item}.")
             arq = item.open('r', newline='\n')
             arq_csv = csv.DictReader(arq, delimiter=';')
             for reg in arq_csv:
@@ -620,9 +637,14 @@ class QualificacaoCadastral(object):
                     lst_registros[reg['CPF']] = {
                         'qcadastral': ';'.join([f'{cod}: {err}' for cod, err in erros.items()]),
                         'exportado': False,
+                        'atualizado': True,
                     }
                 else:
-                    lst_registros[reg['CPF']] = {'qcadastral': 'SIM', 'exportado': False}
+                    lst_registros[reg['CPF']] = {
+                        'qcadastral': 'SIM',
+                        'exportado': False,
+                        'atualizado': True,
+                    }
             ids_arqs.append(id_arq)
         for cpf, reg in lst_registros.items():
             bd.pessoas.update(reg, cond=(where('cpf')==int(cpf)))
@@ -690,34 +712,6 @@ def salvar_dados(dados: List[dict], dst: Path, fieldnames: Optional[List]=None) 
             arq.write('')
 
 if __name__ == '__main__':
-    # Ler perfis
-    with WindowsPath(__file__).parent.joinpath('./perfis.toml').open() as f:
-        cfg = tomlkit.parse(f.read())
-    perfis = cfg['perfis']
-    
-    # Processar argumentos de linha de comando
-    parser = ArgumentParser()
-    parser.add_argument('-p', '--perfil', action='store', type=str, choices=list(perfis.keys()))
-    args = parser.parse_args()
-
-    if args.perfil and not os.getenv('DEBUG') == '1':
-        perfil = perfis[args.perfil]
-        base = WindowsPath(perfil['base'])
-        base.mkdir(exist_ok=True)
-        destino = WindowsPath(perfil['destino'])
-        origem = WindowsPath(perfil['origem'])
-        bd.definir_loc(loc=base.joinpath(f'bd.{args.perfil}.json'))
-        logger.add(base.joinpath('coletor.log'), level='INFO')
-        logger.info(f"Processamento iniciado no perfil '{args.perfil}'.")
-    else:
-        base = WindowsPath.cwd().joinpath('dev')
-        base.mkdir(exist_ok=True)
-        origem = base
-        destino = base
-        bd.definir_loc(loc=base.joinpath('bd.dev.json'))
-        logger.add(base.joinpath('coletor.log'), level='INFO')
-        logger.info(f"Processamento iniciado no modo de desenvolvimento.")
-
     colt = Coletor(origem=origem)
     colt.salvar()
     exp = Controlador(destino=destino)

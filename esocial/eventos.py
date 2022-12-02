@@ -1,11 +1,13 @@
-import csv
 import json
-import pprint
+import secrets
 import unicodedata
 import xmlschema
+from loguru import logger
+from pathlib import WindowsPath
+
 from collections import defaultdict
 from datetime import datetime
-from loguru import logger
+from decimal import Decimal
 from lxml import etree
 from suds.cache import FileCache
 from suds.client import Client
@@ -14,28 +16,32 @@ from xsdata.formats.dataclass.serializers.config import SerializerConfig
 from xsdata.formats.dataclass.serializers.xml import XmlSerializer
 from xsdata.models.datatype import XmlDate
 
+from core import perfil
 
 from . import core, token, utils
 from .leiautes import *
+
+from .leiautes.com.xsd.lote_eventos.consulta.consulta_lote_eventos_v1_0_0 import ESocial as ESocialConsultaLoteEventos
 from .leiautes.com.xsd.lote_eventos.envio.envio_lote_eventos_v1_1_1 import *
-from transports import HttpTransportSuds
+from .transports import HttpTransportSuds
 
 CNPJ8 = "29138393"
 CNPJ11 = "29138393000186"
 
-TIPO_AMBIENTE: tipos.TipoAmbiente = tipos.TipoAmbiente.PRODUCAO
 PROCESSO_EMISSAO: tipos.TsProcEmiSem8 = tipos.TsProcEmiSem8.VALUE_1
 VERSAO_APLICATIVO = '0.1'
 
-if core.TIPO_AMBIENTE == utils.TipoAmbiente.PRODUCAO:
-    URL_RAIZ_ENVIO = 'https://webservices.envio.esocial.gov.br'
-    URL_RAIZ_CONSULTA = 'https://webservices.consulta.esocial.gov.br'
-else:
-    URL_RAIZ_ENVIO = 'https://webservices.producaorestrita.esocial.gov.br'
-    URL_RAIZ_CONSULTA = URL_RAIZ_ENVIO
+def url_consulta() -> str:
+    final = '/servicos/empregador/consultarloteeventos/WsConsultarLoteEventos.svc?singleWsdl'
+    if core.TIPO_AMBIENTE == utils.TipoAmbiente.PRODUCAO:
+        return 'https://webservices.consulta.esocial.gov.br' + final
+    return 'https://webservices.producaorestrita.esocial.gov.br' + final
 
-URL_CONSULTA = f'{URL_RAIZ_CONSULTA}/servicos/empregador/consultarloteeventos/WsConsultarLoteEventos.svc?singleWsdl'
-URL_ENVIO = f'{URL_RAIZ_ENVIO}/servicos/empregador/enviarloteeventos/WsEnviarLoteEventos.svc?singleWsdl'
+def url_envio() -> str:
+    final = '/servicos/empregador/enviarloteeventos/WsEnviarLoteEventos.svc?singleWsdl'
+    if core.TIPO_AMBIENTE == utils.TipoAmbiente.PRODUCAO:
+        return 'https://webservices.envio.esocial.gov.br' + final
+    return 'https://webservices.producaorestrita.esocial.gov.br' + final
 
 transport = HttpTransportSuds()
 transport.urlopener = token.opener
@@ -74,7 +80,9 @@ def envio_lote_eventos(evs: dict, grupo: utils.LoteEventosTipoGrupo) -> str:
         xml_signer = token.assinar(xml=xml_s1000)
         xml_string = etree.tostring(xml_signer)
 
-        schema = xmlschema.XMLSchema(ev.__class__.Meta.schema)
+        schema = xmlschema.XMLSchema(
+            WindowsPath(__file__).parent.joinpath(ev.__class__.Meta.schema)
+        )
         if not schema.is_valid(xml_string):
             schema.validate(xml_string)
         else:
@@ -118,41 +126,33 @@ def envio_lote_eventos(evs: dict, grupo: utils.LoteEventosTipoGrupo) -> str:
 
     return xml_esocial.decode()
 
-def montar_S1200(ind_retif: tipos.TsIndRetif, per_apur: str, identificador: str, cod_categ: str,
-        cnpj_est: str, cbo: str, cpf_trab: str, cod_lotacao: str, nome:str, dt_nasc: str,
-        remuneracoes: List[S1200.TItensRemun], nr_recibo: Optional[str]=None, anual: bool=False,
-        matricula: Optional[str]=None
-    ) -> str:
+def consulta_lote_eventos(protocolo_envio) -> str:
+    esocial = ESocialConsultaLoteEventos(
+        consulta_lote_eventos=ESocialConsultaLoteEventos.ConsultaLoteEventos(
+            protocolo_envio=protocolo_envio
+        )
+    )
+    xml_esocial = xml_serializer.render(
+        obj=esocial,
+        ns_map={None: "http://www.esocial.gov.br/schema/evt/evtInfoEmpregador/v_S_01_01_00"}
+    )
+    with open('test_consulta_lote_eventos.xml', 'w') as arq:
+        arq.write(xml_esocial)
+    
+    return xml_esocial
+
+def montar_S1200(
+        ind_retif: tipos.TsIndRetif, per_apur: str, cpf_trab: str, nome:str, dt_nasc: str, dm_dev_list: List,
+        nr_recibo: Optional[str]=None, anual: bool=False,
+        ) -> str:
     ide_evento = tipos.TIdeEventoFolha(
         ind_retif=ind_retif,
         nr_recibo=nr_recibo,
         ind_apuracao=tipos.TsIndApuracao.VALUE_2 if anual else tipos.TsIndApuracao.VALUE_1,
         per_apur=per_apur,
-        tp_amb=TIPO_AMBIENTE,
+        tp_amb=core.TIPO_AMBIENTE,
         proc_emi=PROCESSO_EMISSAO,
         ver_proc=VERSAO_APLICATIVO,
-    )
-    remun_per_apur = S1200.Evento.EvtRemun.DmDev.InfoPerApur.IdeEstabLot.RemunPerApur(
-        matricula=matricula,
-        itens_remun=remuneracoes,
-    )
-    ide_estab_lot = S1200.Evento.EvtRemun.DmDev.InfoPerApur.IdeEstabLot(
-        tp_insc=tipos.TsTpInsc1.VALUE_1,
-        nr_insc=cnpj_est,
-        cod_lotacao=cod_lotacao,
-        remun_per_apur=[remun_per_apur]
-    )
-    info_per_apur = S1200.Evento.EvtRemun.DmDev.InfoPerApur(
-        ide_estab_lot=[ide_estab_lot]
-    )
-    info_compl_cont = S1200.Evento.EvtRemun.DmDev.InfoComplCont(
-        cod_cbo=cbo,
-    )
-    dm_dev = S1200.Evento.EvtRemun.DmDev(
-        ide_dm_dev=identificador,
-        cod_categ=cod_categ,
-        info_per_apur=info_per_apur,
-        info_compl_cont=info_compl_cont,
     )
     info_complem = S1200.Evento.EvtRemun.IdeTrabalhador.InfoComplem(
         nm_trab=nome,
@@ -170,16 +170,43 @@ def montar_S1200(ind_retif: tipos.TsIndRetif, per_apur: str, identificador: str,
         ide_evento=ide_evento,
         ide_empregador=ide_empregador,
         ide_trabalhador=ide_trabalhador,
-        dm_dev=dm_dev,
+        dm_dev=dm_dev_list,
         id=id_
     )
     return id_, S1200.Evento(evt_remun=evt_remun)
+
+def montar_S1200_DmDev(
+        identificador: str, cod_categ: str, cnpj_est: str, cbo: str, cod_lotacao: str,
+        remuneracoes: List[S1200.TItensRemun], matricula: Optional[str]=None
+        ):
+    remun_per_apur = S1200.Evento.EvtRemun.DmDev.InfoPerApur.IdeEstabLot.RemunPerApur(
+        matricula=matricula,
+        itens_remun=remuneracoes,
+    )
+    ide_estab_lot = S1200.Evento.EvtRemun.DmDev.InfoPerApur.IdeEstabLot(
+        tp_insc=tipos.TsTpInsc1.VALUE_1,
+        nr_insc=cnpj_est,
+        cod_lotacao=cod_lotacao,
+        remun_per_apur=[remun_per_apur]
+    )
+    info_per_apur = S1200.Evento.EvtRemun.DmDev.InfoPerApur(
+        ide_estab_lot=[ide_estab_lot]
+    )
+    info_compl_cont = S1200.Evento.EvtRemun.DmDev.InfoComplCont(
+        cod_cbo=cbo,
+    )
+    return S1200.Evento.EvtRemun.DmDev(
+        ide_dm_dev=identificador,
+        cod_categ=cod_categ,
+        info_per_apur=info_per_apur,
+        info_compl_cont=info_compl_cont,
+    )
 
 def montar_S1210(cpf_benef: str, per_ref: str, pagamentos=List[S1210.Evento.EvtPgtos.IdeBenef.InfoPgto]):
     ide_evento = tipos.TIdeEventoFolha(
         ind_retif=tipos.TsIndRetif.VALUE_1,
         per_apur=per_ref,
-        tp_amb=TIPO_AMBIENTE,
+        tp_amb=core.TIPO_AMBIENTE,
         proc_emi=PROCESSO_EMISSAO,
         ver_proc=VERSAO_APLICATIVO
     )
@@ -209,116 +236,127 @@ def montar_S1210_Pagamento(dt_pgto: XmlDate, tp_pgto: S1210.InfoPgtoTpPgto, per_
     )
 
 def enviar_s1200(registros):
-    arq = open(arquivo)
-    arq_csv = csv.DictReader(arq, delimiter=';')
-    recibos = []
-    registros = defaultdict(dict)
-    logger.info("Configurando eventos.")
-    identificadores = {}
-    for reg in arq_csv:
-        registros[reg['CPF']] = reg
-        if reg['ID S-1200'] != '' and reg['S-1200 Erro'] == '':
-            continue
+    logger.info("Organizando dados de trabalho.")
+    dados_ev = defaultdict(list)
+    for rec in registros:
+        if not rec['protocolo_s1200'] or rec['erro_s1200']:
+            rec['id_s1200'] = ''
+            rec['protocolo_s1200'] = ''
+            rec['erro_s1200'] = ''
+            dados_ev[rec['cpf']].append(rec)
+    
+    logger.info("Montando eventos.")
+    eventos = []
+    identificadores = defaultdict(list)
+    for cpf, evt_list in dados_ev.items():
+        valor = 0
+        dsc_inss = 0
+        dsc_irrf = 0
+        dsc_iss = 0
+        for evt in evt_list:
+            valor += Decimal(utils.txt_para_num(evt['valor']))
+            dsc_inss += Decimal(utils.txt_para_num(evt['dsc_inss']))
+            dsc_irrf += Decimal(utils.txt_para_num(evt['dsc_irrf']))
+            dsc_iss += Decimal(utils.txt_para_num(evt['dsc_iss']))
+        
         remuneracao = S1200.TItensRemun(
             cod_rubr='REMUNERACAO',
             ide_tab_rubr='RPA',
-            vr_rubr=utils.txt_para_num(reg['Valor']),
+            vr_rubr=valor,
             ind_apur_ir='0',
         )
         inss = S1200.TItensRemun(
             cod_rubr='INSS',
             ide_tab_rubr='RPA',
-            vr_rubr=utils.txt_para_num(reg['Dsc. INSS']),
+            vr_rubr=dsc_inss,
             ind_apur_ir='0',
         )
         irrf = S1200.TItensRemun(
             cod_rubr='IRRF',
             ide_tab_rubr='RPA',
-            vr_rubr=utils.txt_para_num(reg['Dsc. IRRF']),
+            vr_rubr=dsc_irrf,
             ind_apur_ir='0',
         )
         iss = S1200.TItensRemun(
             cod_rubr='ISSQN',
             ide_tab_rubr='RPA',
-            vr_rubr=utils.txt_para_num(reg['Dsc. ISS']),
+            vr_rubr=dsc_iss,
             ind_apur_ir='0',
         )
-        dia, mes, ano = reg['Data de nascimento'].split('/')
+        dia, mes, ano = dados_ev[cpf][0]['dt_nascimento'].split('/')
         dt_nasc = XmlDate(
             year=int(ano),
             month=int(mes),
             day=int(dia),
         )
-        dia, mes, ano = reg['Data do pagamento'].split('/')
+        dia, mes, ano = dados_ev[cpf][0]['dt_final'].split('/')
         remuneracoes = [remuneracao, inss]
-        if reg['Dsc. IRRF'] != '0':
+        if dsc_irrf > 0:
             remuneracoes.append(irrf)
-        if reg['Dsc. ISS'] != '0':
+        if dsc_iss > 0:
             remuneracoes.append(iss)
-        
+
+        demonstrativo = secrets.token_hex(12)
+        s1200_dm_dv = montar_S1200_DmDev(
+            identificador=demonstrativo,
+            cod_categ=701,
+            cnpj_est=perfil['cnpj'],
+            cbo='{0:>06}'.format(utils.limpar_doc(dados_ev[cpf][0]['cbo'])),
+            cod_lotacao='001',
+            remuneracoes=remuneracoes
+        )
         nome = unicodedata.normalize(
-            "NFKD", reg['Nome']
+            "NFKD", dados_ev[cpf][0]['nome']
         ).encode(
             'ASCII', 'ignore'
         ).decode().upper().strip()
         id_, evento = montar_S1200(
             ind_retif=tipos.TsIndRetif.VALUE_1,
             per_apur=f'{ano}-{mes}',
-            identificador='001',
-            cod_categ=701,
-            cnpj_est=CNPJ11,
-            cbo='{0:>06}'.format(utils.limpar_doc(reg['CBO'])),
-            cpf_trab='{0:>011}'.format(utils.limpar_doc(reg['CPF'])),
-            cod_lotacao='001',
+            cpf_trab='{0:>011}'.format(utils.limpar_doc(cpf)),
             nome=nome,
             dt_nasc=dt_nasc,
-            remuneracoes=remuneracoes
+            dm_dev_list=[s1200_dm_dv],
         )
-        recibos.append((id_, evento))
-        registros[reg['CPF']]['Nome'] = nome
-        registros[reg['CPF']]['ID S-1200'] = id_
-        identificadores[id_] = reg['CPF']
+        eventos.append((id_, evento))
+        for evt in evt_list:
+            identificadores[id_].append(evt)
+            evt['nome'] = nome
+            evt['id_s1200'] = id_
+            evt['demonstrativo'] = demonstrativo
 
     logger.info("Separando eventos em lotes.")
-    lote_recibos = []
-    while len(recibos) > 50:
-        lote_recibos.append(recibos[:50])
-        recibos = recibos[50:]
-    lote_recibos.append(recibos)
+    lote_eventos = []
+    while len(eventos) > 50:
+        lote_eventos.append(eventos[:50])
+        eventos = eventos[50:]
+    lote_eventos.append(eventos)
 
-    client = Client(URL_ENVIO, transport=transport)
+    client = Client(url_envio(), transport=transport)
     client.set_options(cache=cache)
     logger.info("Enviando os lotes.")
-    for lote in lote_recibos:
+    for lote in lote_eventos:
         lote_dct = dict(lote)
         lote_para_envio = envio_lote_eventos(evs=lote_dct, grupo=utils.LoteEventosTipoGrupo.EVENTOS_PERIODICOS)
         result = client.service.EnviarLoteEventos(loteEventos=Raw(lote_para_envio))
         protocolo_envio = core.salvar_retorno(result) or ''
         logger.info("Lote enviado.")
-        for evento in lote:
-            cpf = identificadores[evento[0]]
-            registros[cpf].update({
-                'Protocolo de envio S-1200': protocolo_envio,
-            })
-    registros = list(registros.values())
-    arq.close()
-    if registros:
-        arq2 = open(arquivo, 'w', newline='\n')
-        arq2_csv = csv.DictWriter(arq2, fieldnames=list(registros[0].keys()), delimiter=';')
-        arq2_csv.writeheader()
-        arq2_csv.writerows(registros)
+        for id_evento in lote_dct.keys():
+            for evt in identificadores[id_evento]:
+                evt['protocolo_s1200'] = protocolo_envio
 
-def consultar_s1200():
-    arq = open(arquivo)
-    arq_csv = csv.DictReader(arq, delimiter=';')
-    registros = defaultdict(dict)
-    for reg in arq_csv:
-        registros[reg['Protocolo de envio S-1200']][reg['ID S-1200']] = reg
-    arq.close()
-        
-    client = Client(URL_CONSULTA, transport=transport)
+def consultar_s1200(registros):
+    logger.info("Organizando dados para processamento.")
+    dados_evt = defaultdict(list)
+    dados_reg = defaultdict(list)
+    for reg in registros:
+        dados_evt[reg['protocolo_s1200']].append(reg['id_s1200'])
+        dados_reg[reg['id_s1200']].append(reg)
+
+    client = Client(url_consulta(), transport=transport)
     client.set_options(cache=cache)
-    for protocolo in registros:
+    for protocolo in dados_evt:
+        logger.info(f"Obtendo dados do protocolo {protocolo}.")
         arquivo_consulta = core.DIR_CONSULTAS.joinpath(f'{protocolo}.json')
         if not arquivo_consulta.exists():
             result = client.service.ConsultarLoteEventos(consulta=Raw(consulta_lote_eventos(protocolo)))
@@ -331,58 +369,56 @@ def consultar_s1200():
         for evento in eventos:
             retorno_evento = evento['retornoEvento']['eSocial']['retornoEvento']
             id_ = retorno_evento['_Id']
-            if id_ in registros[protocolo]:
+            if id_ in dados_evt[protocolo]:
                 resposta = retorno_evento['processamento']['descResposta']
                 if resposta == 'Sucesso.':
                     recibo = retorno_evento['recibo']['nrRecibo']
-                    registros[protocolo][id_]['S-1200 Recibo'] = recibo
-                    registros[protocolo][id_]['S-1200 Erro'] = ''
+                    for reg in dados_reg[id_]:
+                        reg['recibo_s1200'] = recibo
+                        reg['erro_s1200'] = ''
                 else:
-                    registros[protocolo][id_]['S-1200 Erro'] = resposta
-    
-    linhas = []
-    for ids in registros.values():
-        for reg in ids.values():
-            linhas.append(reg)
-    arq2 = open(arquivo, 'w', newline='\n')
-    arq2_csv = csv.DictWriter(arq2, fieldnames=arq_csv.fieldnames, delimiter=';')
-    arq2_csv.writeheader()
-    arq2_csv.writerows(linhas)
+                    dscr_resp = [resposta]
+                    ocorrencias = retorno_evento['processamento']['ocorrencias']
+                    if not isinstance(ocorrencias, list):
+                        ocorrencias = [ocorrencias]
+                    for ocorr in ocorrencias:
+                        dscr_resp.append(ocorr['ocorrencia']['descricao'])
+                    for reg in dados_reg[id_]:
+                        reg['erro_s1200'] = '\n'.join(dscr_resp)
 
-def enviar_s1210():
-    arq = open(arquivo)
-    arq_csv = csv.DictReader(arq, delimiter=';')
-    logger.info("Configurando eventos.")
-    registros = defaultdict(dict)
-    identificadores = {}
+def enviar_s1210(registros):
+    logger.info("Preparando dados.")
+    dados_evt = defaultdict(list)
+    for reg in registros:
+        if not reg['recibo_s1210'] and reg['recibo_s1200'] and reg['dt_pgto'] and (not reg['id_s1210'] or reg['S-1210 Erro']):
+            dados_evt[reg['cpf']].append(reg)
+    
     lista_eventos = []
-    for reg in arq_csv:
-        registros[reg['CPF']] = reg
-        if (reg['ID S-1210'] != '' and reg['S-1210 Erro'] == '') or reg['S-1200 Recibo'] == '':
-            pprint(reg)
-            continue
-        dia, mes, ano = reg['Data do pagamento'].split('/')
-        dt_pgto = XmlDate(
-            year=int(ano),
-            month=int(mes),
-            day=int(dia),
-        )
-        per_ref = f'{ano}-{mes}'
+    identificador = defaultdict(list)
+    for cpf, evts in dados_evt.items():
+        dm_val = Decimal('0')
+        for ev in evts:
+            dm_val += Decimal(utils.txt_para_num(ev['v_liquido']))
+        
+        dados = evts[0]
+        dt_pgto = XmlDate.from_datetime(dados['dt_pgto'])
+        per_ref = dados['dt_pgto'].strftime("%Y-%m")
         info_pg = montar_S1210_Pagamento(
             dt_pgto=dt_pgto,
             tp_pgto=S1210.InfoPgtoTpPgto.VALUE_1,
             per_ref=per_ref,
-            dm_dev='001',
-            valor=utils.txt_para_num(reg['Líquido'])
+            dm_dev=dados['demonstrativo'],
+            valor=dm_val,
         )
         id_, evento = montar_S1210(
-            cpf_benef='{0:>011}'.format(utils.limpar_doc(reg['CPF'])),
+            cpf_benef='{0:>011}'.format(dados['cpf']),
             per_ref=per_ref,
             pagamentos=[info_pg],
         )
         lista_eventos.append((id_, evento))
-        registros[reg['CPF']]['ID S-1210'] = id_
-        identificadores[id_] = reg['CPF']
+        identificador[id_] = cpf
+        for ev in evts:
+            ev['id_s1210'] = id_
     
     logger.info("Separando eventos em lotes.")
     lote_eventos = []
@@ -391,42 +427,34 @@ def enviar_s1210():
         lista_eventos = lista_eventos[50:]
     lote_eventos.append(lista_eventos)
 
-    client = Client(URL_ENVIO, transport=transport)
+    client = Client(url_envio(), transport=transport)
     client.set_options(cache=cache)
     logger.info("Enviando os lotes.")
     for lote in lote_eventos:
         lote_dct = dict(lote)
-        lote_para_envio = envio_lote_eventos(evs=lote_dct, grupo=LoteEventosTipoGrupo.EVENTOS_PERIODICOS)
+        lote_para_envio = envio_lote_eventos(
+            evs=lote_dct,
+            grupo=utils.LoteEventosTipoGrupo.EVENTOS_PERIODICOS,
+        )
         result = client.service.EnviarLoteEventos(loteEventos=Raw(lote_para_envio))
         protocolo_envio = core.salvar_retorno(result) or ''
         logger.info("Lote enviado.")
         for evento in lote:
-            cpf = identificadores[evento[0]]
-            registros[cpf].update({
-                'Protocolo de envio S-1210': protocolo_envio,
-            })
-    registros = list(registros.values())
-    arq.close()
-    if registros:
-        arq2 = open(arquivo, 'w', newline='\n')
-        arq2_csv = csv.DictWriter(arq2, fieldnames=list(registros[0].keys()), delimiter=';')
-        arq2_csv.writeheader()
-        arq2_csv.writerows(registros)
+            cpf = identificador[evento[0]]
+            for evt in dados_evt[cpf]:
+                evt['protocolo_s1210'] = protocolo_envio
 
-def consultar_s1210():
-    arq = open(arquivo)
-    arq_csv = csv.DictReader(arq, delimiter=';')
-    registros = defaultdict(dict)
-    for reg in arq_csv:
-        if reg['Protocolo de envio S-1210'] and reg['ID S-1210']:
-            registros[reg['Protocolo de envio S-1210']][reg['ID S-1210']] = reg
-        else:
-            registros[''][reg['CPF']] = reg
-    arq.close()
+def consultar_s1210(registros):
+    dados = defaultdict(list)
+    lista_registros = defaultdict(list)
+    for reg in registros:
+        if reg['protocolo_s1210'] and reg['id_s1210']:
+            dados[reg['protocolo_s1210']].append(reg['id_s1210'])
+            lista_registros[reg['id_s1210']].append(reg)
         
-    client = Client(URL_CONSULTA, transport=transport)
+    client = Client(url_consulta(), transport=transport)
     client.set_options(cache=cache)
-    for protocolo in registros:
+    for protocolo in dados:
         if protocolo == '':
             continue
         arquivo_consulta = core.DIR_CONSULTAS.joinpath(f'{protocolo}.json')
@@ -444,15 +472,14 @@ def consultar_s1210():
             resposta = retorno_evento['processamento']['descResposta']
             if resposta == 'Sucesso.':
                 recibo = retorno_evento['recibo']['nrRecibo']
-                registros[protocolo][id_]['S-1210 Recibo'] = recibo
+                for reg in lista_registros[id_]:
+                    reg['recibo_s1210'] = recibo
             else:
-                registros[protocolo][id_]['S-1210 Erro'] = resposta
-    
-    linhas = []
-    for ids in registros.values():
-        for reg in ids.values():
-            linhas.append(reg)
-    arq2 = open(arquivo, 'w', newline='\n')
-    arq2_csv = csv.DictWriter(arq2, fieldnames=arq_csv.fieldnames, delimiter=';')
-    arq2_csv.writeheader()
-    arq2_csv.writerows(linhas)
+                dscr_resp = [resposta]
+                ocorrencias = retorno_evento['processamento']['ocorrencias']
+                if not isinstance(ocorrencias, list):
+                    ocorrencias = [ocorrencias]
+                for ocorr in ocorrencias:
+                    dscr_resp.append(ocorr['ocorrencia']['descricao'])
+                for reg in lista_registros[id_]:
+                    reg['erro_s1200'] = '\n'.join(dscr_resp)

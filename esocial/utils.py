@@ -1,3 +1,4 @@
+from decimal import Decimal
 from enum import Enum
 from typing import Final
 
@@ -34,7 +35,11 @@ def limpar_data(data: str) -> str:
     return data.replace('/', '')
 
 def limpar_doc(txt: str) -> str:
+    if isinstance(txt, int):
+        return txt
     return txt.replace('.', '').replace('-', '')
 
-def txt_para_num(txt: str) -> float:
-    return float(txt.replace('.', '').replace(',', '.'))
+def txt_para_num(txt: str) -> str:
+    if isinstance(txt, (int, float)):
+        return Decimal(txt).quantize(Decimal("1.00"))
+    return txt.replace('.', '').replace(',', '.')

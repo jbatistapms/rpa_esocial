@@ -4,15 +4,13 @@ from datetime import datetime
 from pathlib import WindowsPath
 from typing import Any, Optional
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from .utils import TipoAmbiente
 
-TIPO_AMBIENTE: TipoAmbiente = TipoAmbiente.PRODUCAO
+TIPO_AMBIENTE: TipoAmbiente = None
 VERSAO_LEIAUTE = 'S_1_0'
 
 DIR_APLICATION = WindowsPath(os.getenv('DIR_APLICATION'))
+DIR_APLICATION.mkdir(exist_ok=True)
 DIR_CONSULTAS = DIR_APLICATION.joinpath('consultas')
 DIR_CONSULTAS.mkdir(exist_ok=True)
 DIR_ERROS = DIR_APLICATION.joinpath('erros')
@@ -25,18 +23,16 @@ URL_WS_RESTRITO_BASE = URL_WS + 'servicos/empregador/'
 URL_WS_ENV_RESTRITO = URL_WS_RESTRITO_BASE + 'enviarloteeventos/WsEnviarLoteEventos.svc'
 URL_WS_REC_RESTRITO = URL_WS_RESTRITO_BASE + 'consultarloteeventos/WsConsultarLoteEventos.svc'
 
-
-
-def ca_path():
-    cert_path = os.path.join(os.getcwd(), 'certificados')
-    ca_path = os.path.join(cert_path, 'ca.crt')
-    if os.path.exists(ca_path):
+def ca_path() -> str:
+    cert_path = WindowsPath(__file__).parent.joinpath('certificados')
+    ca_path = cert_path.joinpath('ca.crt')
+    if ca_path.exists():
         os.remove(ca_path)
-    with open(ca_path, 'w') as arq:
-        for origem in os.listdir(cert_path):
-            origem = open(os.path.join(cert_path, origem))
-            arq.write(origem.read())
-    return ca_path
+    with ca_path.open('w') as arq:
+        for origem in cert_path.iterdir():
+            origem = cert_path.joinpath(origem)
+            arq.write(origem.open().read())
+    return str(ca_path)
 
 
 def converter(dados) -> Any:

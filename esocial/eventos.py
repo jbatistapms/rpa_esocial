@@ -76,8 +76,8 @@ def envio_lote_eventos(evs: dict, grupo: utils.LoteEventosTipoGrupo) -> str:
     lista_eventos_assinados = defaultdict()
     for id_, ev in evs.items():
         ns_map = {None: ev.__class__.Meta.namespace}
-        xml_s1000 = XmlSerializer().render(obj=ev, ns_map=ns_map)
-        xml_signer = token.assinar(xml=xml_s1000)
+        xml_evento = XmlSerializer().render(obj=ev, ns_map=ns_map)
+        xml_signer = token.assinar(xml=xml_evento)
         xml_string = etree.tostring(xml_signer)
 
         schema = xmlschema.XMLSchema(
@@ -234,6 +234,40 @@ def montar_S1210_Pagamento(dt_pgto: XmlDate, tp_pgto: S1210.InfoPgtoTpPgto, per_
         ide_dm_dev=dm_dev,
         vr_liq=valor,
     )
+
+def montar_S3000(
+        tp_evento: str, nr_rec_evt: str, cpf_trab: str, 
+        ind_apuracao: str, per_apur: str,
+    ):
+    ide_evento = tipos.TIdeEventoEvtTabInicial(
+        tp_amb=core.TIPO_AMBIENTE,
+        proc_emi=PROCESSO_EMISSAO,
+        ver_proc=VERSAO_APLICATIVO,
+    )
+    ide_empregador = tipos.TIdeEmpregador(
+        **IDE_EMPREGADOR
+    )
+    ide_trabalhador = S3000.Evento.EvtExclusao.InfoExclusao.IdeTrabalhador(
+        cpf_trab=cpf_trab,
+    )
+    ide_folha_pagto = S3000.Evento.EvtExclusao.InfoExclusao.IdeFolhaPagto(
+        ind_apuracao=ind_apuracao,
+        per_apur=per_apur,
+    )
+    info_exclusao = S3000.Evento.EvtExclusao.InfoExclusao(
+        tp_evento=tp_evento,
+        nr_rec_evt=nr_rec_evt,
+        ide_trabalhador=ide_trabalhador,
+        ide_folha_pagto=ide_folha_pagto,
+    )
+    id_ = gerar_id()
+    evt_exclusao = S3000.Evento.EvtExclusao(
+        ide_evento=ide_evento,
+        ide_empregador=ide_empregador,
+        info_exclusao=info_exclusao,
+        id=id_
+    )
+    return id_, S3000.Evento(evt_exclusao=evt_exclusao)
 
 def enviar_s1200(registros):
     logger.info("Organizando dados de trabalho.")
@@ -482,4 +516,82 @@ def consultar_s1210(registros):
                 for ocorr in ocorrencias:
                     dscr_resp.append(ocorr['ocorrencia']['descricao'])
                 for reg in lista_registros[id_]:
-                    reg['erro_s1200'] = '\n'.join(dscr_resp)
+                    reg['erro_s1210'] = '\n'.join(dscr_resp)
+
+def enviar_s3000(registros) -> None:
+    logger.info("Preparando e criando eventos S-3000.")
+    list_reg = {}
+    lista_eventos = []
+    for reg in registros:
+        if reg['recibo_s3000'] or (reg['protocolo_s3000'] and not reg['erro_s3000']):
+            continue
+        id_, evento = montar_S3000(
+            per_apur=reg['per_apur'],
+            tp_evento=reg['tp_evento'],
+            nr_rec_evt=reg['nr_rec_evt'],
+            cpf_trab=reg['cpf_trab'],
+            ind_apuracao=reg['ind_apuracao'],
+        )
+        reg['id_s3000'] = id_
+        lista_eventos.append((id_, evento))
+        list_reg[id_] = reg
+    
+    logger.info("Separando eventos em lotes.")
+    lote_eventos = []
+    while len(lista_eventos) > 50:
+        lote_eventos.append(lista_eventos[:50])
+        lista_eventos = lista_eventos[50:]
+    lote_eventos.append(lista_eventos)
+
+    client = Client(url_envio(), transport=transport)
+    client.set_options(cache=cache)
+    logger.info("Enviando os lotes.")
+    for lote in lote_eventos:
+        lote_dct = dict(lote)
+        lote_para_envio = envio_lote_eventos(
+            evs=lote_dct,
+            grupo=utils.LoteEventosTipoGrupo.EVENTOS_NAO_PERIODICOS,
+        )
+        result = client.service.EnviarLoteEventos(loteEventos=Raw(lote_para_envio))
+        protocolo_envio = core.salvar_retorno(result) or ''
+        logger.info("Lote enviado.")
+        for id_ in lote_dct.keys():
+            list_reg[id_]['protocolo_s3000'] = protocolo_envio
+
+def consultar_s3000(registros):
+    dados = defaultdict(list)
+    lista_registros = {}
+    for reg in registros:
+        if reg['protocolo_s3000'] and reg['id_s3000']:
+            dados[reg['protocolo_s3000']].append(reg['id_s3000'])
+            lista_registros[reg['id_s3000']] = reg
+        
+    client = Client(url_consulta(), transport=transport)
+    client.set_options(cache=cache)
+    for protocolo in dados:
+        if protocolo == '':
+            continue
+        arquivo_consulta = core.DIR_CONSULTAS.joinpath(f'{protocolo}.json')
+        if not arquivo_consulta.exists():
+            result = client.service.ConsultarLoteEventos(consulta=Raw(consulta_lote_eventos(protocolo)))
+            core.salvar_consulta(result)
+        with open(arquivo_consulta) as arq:
+            retorno_eventos = json.loads(arq.read())
+        eventos = retorno_eventos['eSocial']['retornoProcessamentoLoteEventos']['retornoEventos']['evento']
+        if isinstance(eventos, dict):
+            eventos = [eventos]
+        for evento in eventos:
+            retorno_evento = evento['retornoEvento']['eSocial']['retornoEvento']
+            id_ = retorno_evento['_Id']
+            resposta = retorno_evento['processamento']['descResposta']
+            if resposta == 'Sucesso.':
+                recibo = retorno_evento['recibo']['nrRecibo']
+                lista_registros[id_]['recibo_s3000'] = recibo
+            else:
+                dscr_resp = [resposta]
+                ocorrencias = retorno_evento['processamento']['ocorrencias']
+                if not isinstance(ocorrencias, list):
+                    ocorrencias = [ocorrencias]
+                for ocorr in ocorrencias:
+                    dscr_resp.append(ocorr['ocorrencia']['descricao'])
+                lista_registros[id_]['erro_s3000'] = '\n'.join(dscr_resp)

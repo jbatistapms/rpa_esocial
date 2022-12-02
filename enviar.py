@@ -5,11 +5,9 @@ from loguru import logger
 from coletar import Controlador, destino
 from core import args
 from esocial import core as core_esocial
-from esocial.eventos import consultar_s1200, consultar_s1210, enviar_s1200, enviar_s1210
+from esocial.eventos import *
+from esocial.planilhas import *
 from esocial.utils import TipoAmbiente
-
-
-tipo_eventos = ['1200', '1210']
 
 if __name__ == '__main__':
     if args.producao:
@@ -29,6 +27,10 @@ if __name__ == '__main__':
         elif args.tipo == '1210':
             enviar_s1210(registros=ctrl.pln_recibos.registros())
             ctrl.pln_recibos.gravar()
+        elif args.tipo == '3000':
+            pln = PlanilhaS3000()
+            enviar_s3000(registros=pln.registros())
+            pln.gravar()
     elif args.consulta:
         if args.tipo == '1200':
             consultar_s1200(registros=ctrl.pln_recibos.registros())
@@ -36,3 +38,7 @@ if __name__ == '__main__':
         elif args.tipo == '1210':
             consultar_s1210(registros=ctrl.pln_recibos.registros())
             ctrl.pln_recibos.gravar()
+        elif args.tipo == '3000':
+            pln = PlanilhaS3000()
+            consultar_s3000(registros=pln.registros())
+            pln.gravar()

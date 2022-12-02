@@ -23,7 +23,7 @@ parser.add_argument(
 )
 subparsers = parser.add_subparsers(help='sub-command help')
 
-tipo_eventos = ['1200', '1210']
+tipo_eventos = ['1200', '1210', '3000']
 
 parser_esocial = subparsers.add_parser('esocial')
 parser_esocial.add_argument('-p', '--producao', action='store_true')

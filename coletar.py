@@ -3,7 +3,7 @@ from collections import defaultdict, OrderedDict
 from datetime import datetime
 from hashlib import md5
 from pathlib import Path, WindowsPath
-from typing import Dict, Final, List, Optional, Tuple, Union
+from typing import Final, List, Optional, Tuple, Union
 
 import xlrd
 from dotenv import load_dotenv
@@ -14,11 +14,9 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from tinydb import where
 
-from core import bd, destino, origem
+from core import bd, destino, origem, perfil
 
 load_dotenv()
-
-COMPETENCIA = os.getenv('COMPETENCIA') # mm/yyyy
 
 ctx_decimal = decimal.getcontext()
 ctx_decimal.rounding = decimal.ROUND_HALF_EVEN
@@ -108,7 +106,7 @@ class Controlador(object):
     def __init__(self, destino: WindowsPath) -> None:
         self.__destino: WindowsPath = destino
         self.__destino.mkdir(exist_ok=True)
-        mes, ano = COMPETENCIA.split('/')
+        mes, ano = perfil['competencia'].split('/')
         self.__loc_recibos = self.__destino.joinpath(f'{ano}.{mes}.xlsx')
         self.pln_pessoas = PlanilhaPessoas(loc=self.__destino.joinpath('Pessoas.xlsx'))
         self.pln_recibos = PlanilhaRecibos(loc=self.__loc_recibos)
@@ -117,7 +115,7 @@ class Controlador(object):
     def exportar_pessoas(self) -> None:
         # Exportando novas pessoas
         condicao_bd = (
-            (where('comp_inicial') == COMPETENCIA) &
+            (where('comp_inicial') == perfil['competencia']) &
             (where('exportado') == False)
         )
         for dados in bd.pessoas.search(condicao_bd):
@@ -137,7 +135,7 @@ class Controlador(object):
     
     def exportar_recibos(self) -> None:
         condicao_bd = (
-            (where('dt_final').search(f'{COMPETENCIA}')) &
+            (where('dt_final').search(perfil['competencia'])) &
             (where('exportado') == False)
         )
         for dados in bd.recibos.search(condicao_bd):
@@ -579,7 +577,7 @@ class QualificacaoCadastral(object):
         else:
             with self.pln_pessoas.loc.parent.joinpath('qualificacao_cadastral.txt').open('w') as a:
                 for ps in self.pln_pessoas.registros():
-                    if ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == COMPETENCIA:
+                    if ps['qcadastral'] != 'SIM' and ps['comp_inicial'] == perfil['competencia']:
                         if ps['cpf'] and ps['nome'] and ps['dt_nascimento']:
                             a.write(
                                 f"{ps['cpf']:>011};13333333332;{ps['nome']};"

@@ -1,8 +1,15 @@
+import locale
 from argparse import ArgumentParser
 from pathlib import WindowsPath
 
+locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+
+import loguru
 import tomlkit
+from dotenv import load_dotenv
 from loguru import logger
+
+load_dotenv()
 
 from bd import BancoDeDados
 bd = BancoDeDados()
@@ -23,7 +30,7 @@ parser.add_argument(
 )
 subparsers = parser.add_subparsers(help='sub-command help')
 
-tipo_eventos = ['1200', '1210', '3000']
+tipo_eventos = ['1200', '1210', '1298', '1299', '3000']
 
 parser_esocial = subparsers.add_parser('esocial')
 parser_esocial.add_argument('-p', '--producao', action='store_true')
@@ -45,7 +52,7 @@ if args.perfil:
     destino = WindowsPath(perfil['destino'])
     origem = WindowsPath(perfil['origem'])
     bd.definir_loc(loc=base.joinpath(f'bd.{args.perfil}.json'))
-    logger.add(base.joinpath('coletor.log'), level='INFO')
+    logger.add(base.joinpath('core.log'), level='DEBUG')
     logger.info(f"Processamento iniciado no perfil '{args.perfil}'.")
 else:
     parser.print_help()

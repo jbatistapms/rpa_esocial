@@ -6,7 +6,6 @@ from pathlib import Path, WindowsPath
 from typing import Final, List, Optional, Tuple, Union
 
 import xlrd
-from dotenv import load_dotenv
 from loguru import logger
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Alignment, NamedStyle
@@ -16,14 +15,40 @@ from tinydb import where
 
 from core import bd, destino, origem, perfil
 
-load_dotenv()
-
 ctx_decimal = decimal.getcontext()
 ctx_decimal.rounding = decimal.ROUND_HALF_EVEN
 
 
 class Arquivo(object):
+    mapa_fmass = {
+        '\ufeffNome': 'nome',
+        'CPF': 'cpf',
+        'Data de Nascimento': 'dt_nascimento',
+        'NIT': 'nis_pis',
+        'CBO': 'cbo',
+        'Serviço Prestado': 'servico_prestado',
+        'Valor Bruto': 'valor',
+        'INSS': 'dsc_inss',
+        'IRRF': 'dsc_irrf',
+        'ISS': 'dsc_iss',
+        'Valor Líquido': 'v_liquido',
+    }
+
+    mapa_fmss = {
+        'Prestador de serviço': 'nome',
+        'CNPJ/CPF': 'cpf',
+        'D. Nasc.': 'dt_nascimento',
+        'NIS': 'nis_pis',
+        'CBO': 'cbo',
+        'BRUTO': 'valor',
+        'INSS': 'dsc_inss',
+        'IRRF': 'dsc_irrf',
+        'ISS': 'dsc_iss',
+        'Líquido': 'v_liquido',
+    }
+
     def __init__(self, loc: WindowsPath) -> None:
+        logger.debug(f"Iniciando processamento do arquivo '{loc}'.")
         self.__loc = loc
         self.__logs_pln = []
         self.__recibos: List[Recibo] = []
@@ -44,13 +69,47 @@ class Arquivo(object):
                 self.id = str(uuid.UUID(md5(loc.read_bytes()).hexdigest()))
                 self.__recibos.append(recibo)
         elif '.fmss' in loc.suffixes and loc.suffix == '.csv':
-            ano, mes, _ = loc.stem.split('.')
+            ano, mes, _, _ = loc.stem.split('.')
+            dt_base = f"01/{mes}/{ano}"
+            valores_padrao = {
+                'servico_prestado': '',
+                'dt_inicial': dt_base,
+                'dt_final': dt_base,
+                'outrosd_desc1': '0',
+                'outrosd_valor1': '0',
+                'outrosd_desc2': '0',
+                'outrosd_valor2': '0',
+                'orgao': 'Fundo Municipal de Saúde de Sapucaia',
+            }
             with loc.open() as arq:
                 csv_arq = csv.DictReader(arq, delimiter=';')
                 for linha in csv_arq:
                     self.__recibos.append(Recibo.novo_de_csv(
                         dados=linha,
-                        dt_base=f"01/{mes}/{ano}"
+                        mapa=self.mapa_fmss,
+                        valores_padrao=valores_padrao,
+                    ))
+                    self.id = str(uuid.UUID(md5(loc.read_bytes()).hexdigest()))
+        elif '.fmass' in loc.suffixes and loc.suffix == '.csv':
+            ano, mes, _, _ = loc.stem.split('.')
+            dt_base = f"01/{mes}/{ano}"
+            valores_padrao = {
+                'dt_inicial': dt_base,
+                'dt_final': dt_base,
+                'outrosd_desc1': '0',
+                'outrosd_valor1': '0',
+                'outrosd_desc2': '0',
+                'outrosd_valor2': '0',
+                'orgao': 'Secretaria Municipal de Assistência Social',
+                'dt_pgto': '',
+            }
+            with loc.open(encoding='utf-8') as arq:
+                csv_arq = csv.DictReader(arq, delimiter=';')
+                for linha in csv_arq:
+                    self.__recibos.append(Recibo.novo_de_csv(
+                        dados=linha,
+                        mapa=self.mapa_fmass,
+                        valores_padrao=valores_padrao,
                     ))
                     self.id = str(uuid.UUID(md5(loc.read_bytes()).hexdigest()))
     
@@ -72,7 +131,7 @@ class Arquivo(object):
     def salvar(self) -> None:
         for rec in self.__recibos:
             rec.salvar()
-        bd.arquivos.insert({'id': self.id})
+        bd.arquivos.insert({'id': self.id, 'loc': str(self.__loc)})
     
 
 class Coletor(object):
@@ -108,7 +167,7 @@ class Controlador(object):
         self.__destino.mkdir(exist_ok=True)
         mes, ano = perfil['competencia'].split('/')
         self.__loc_recibos = self.__destino.joinpath(f'{ano}.{mes}.xlsx')
-        self.pln_pessoas = PlanilhaPessoas(loc=self.__destino.joinpath('Pessoas.xlsx'))
+        self.pln_pessoas = PlanilhaPessoas()
         self.pln_recibos = PlanilhaRecibos(loc=self.__loc_recibos)
         self.qcadastral = QualificacaoCadastral(dir_ori=None, pln=self.pln_pessoas)
     
@@ -148,8 +207,11 @@ class Controlador(object):
 
 
 class Recibo(dict):
-    def __init__(self, **dados) -> None:
+    ASS_API: Final = 1
+
+    def __init__(self, fn_assinatura: Optional[int] = ASS_API, **dados) -> None:
         super().__init__(dados)
+        self.__fn_assinatura = fn_assinatura
         self.__erros = []
         self.__tratar_dados()
         self.__dados_pessoa = copiar_dict(
@@ -157,6 +219,20 @@ class Recibo(dict):
             inc=['cpf', 'dt_nascimento', 'nis_pis', 'nome', 'qcadastral', 'exportado']
         )
         self.__dados_pessoa['comp_inicial'] = self['dt_inicial'][3:]
+        if not self.get('id', None):
+            self.__criar_id()
+    
+    def __criar_id(self) -> None:
+        if self.__fn_assinatura == self.ASS_API:
+            assinatura_recibo = (str(self['cbo']) +
+                str(self['cpf']) +
+                str(self['dt_final']) +
+                str(self['orgao']) +
+                str(self['valor'])
+            )
+            self['id'] = str(uuid.UUID(md5(assinatura_recibo.encode()).hexdigest()))
+        else:
+            self['id'] = str(uuid.uuid4())
     
     def __limpar_doc(self, cmp: str, cont: int) -> None:
         valor = self[cmp]
@@ -216,15 +292,16 @@ class Recibo(dict):
         for erro in self.__erros:
             self['erros'] += erro + ';'
         # Diferença INSS
-        valor = decimal.Decimal(self['valor'])
+        valor = para_decimal(self['valor'])
         inss = valor * decimal.Decimal('0.11')
-        inss = float(inss.quantize(decimal.Decimal('1.00')))
-        self.update({'dif_inss': self['dsc_inss'] - inss})
+        inss = inss.quantize(decimal.Decimal('1.00'))
+        dif_inss = para_decimal(self['dsc_inss']) - inss
+        self.update({'dif_inss': float(dif_inss)})
         # Valor líquido
-        v_liquido = self['valor']
+        v_liquido = para_decimal(self['valor'])
         for cmp in ['dsc_inss', 'dsc_irrf', 'dsc_iss', 'outrosd_valor1', 'outrosd_valor2']:
-            v_liquido -= self[cmp]
-        self.update({'v_liquido': v_liquido})
+            v_liquido -= para_decimal(self[cmp])
+        self.update({'v_liquido': float(v_liquido)})
         # Outros descontos
         if self['outrosd_desc1'] in ['0', 0]:
             self['outrosd_desc1'] = ''
@@ -247,31 +324,22 @@ class Recibo(dict):
         return erros if len(erros) > 0 else None
     
     @classmethod
-    def __novo_dados_padrao(cls) -> dict:
-        return {'qcadastral': 'NÃO', 'erros': '', 'exportado': False}
+    def __dados_padrao(cls) -> dict:
+        return {
+            'nome': '', 'cpf': '', 'dt_nascimento': '', 'nis_pis': '', 'cbo': '',
+            'servico_prestado': '', 'dt_inicial': '', 'dt_final': '', 'valor': '', 
+            'dsc_inss': '', 'dsc_irrf': '', 'dsc_iss': '', 'outrosd_desc1': '',
+            'outrosd_valor1': '', 'outrosd_desc2': '', 'outrosd_valor2': '', 'v_liquido': '',
+            'orgao': '', 'qcadastral': 'NÃO', 'erros': '', 'exportado': False
+        }
     
     @classmethod
-    def novo_de_csv(cls, dados: dict, dt_base: str) -> 'Recibo':
-        registro = cls.__novo_dados_padrao()
-        registro['nome'] = dados['Prestador de serviço']
-        registro['cpf'] = dados['CNPJ/CPF']
-        registro['dt_nascimento'] = dados['D. Nasc.']
-        registro['nis_pis'] = dados['NIS']
-        registro['cbo'] = dados['CBO']
-        registro['servico_prestado'] = ''
-        registro['dt_inicial'] = dt_base
-        registro['dt_final'] = dt_base
-        registro['valor'] = dados['BRUTO']
-        registro['dsc_inss'] = dados['INSS']
-        registro['dsc_irrf'] = dados['IRRF']
-        registro['dsc_iss'] = dados['ISS']
-        registro['outrosd_desc1'] = '0'
-        registro['outrosd_valor1'] = '0'
-        registro['outrosd_desc2'] = '0'
-        registro['outrosd_valor2'] = '0'
-        registro['v_liquido'] = dados['Líquido']
-        registro['orgao'] = 'Fundo Municipal de Saúde de Sapucaia'
-        return cls(**registro)
+    def novo_de_csv(cls, dados: dict, mapa: dict, valores_padrao: dict, fn_assinatura: Optional[int] = None) -> 'Recibo':
+        dados = {k.strip():v for k,v in dados.items()}
+        registro = cls.__dados_padrao()
+        registro.update(valores_padrao)
+        registro.update({v: dados[k] for k, v in mapa.items()})
+        return cls(**registro, fn_assinatura=fn_assinatura)
     
     @classmethod
     def novo_de_planilha(cls, loc: WindowsPath) -> Optional['Recibo']:
@@ -282,7 +350,7 @@ class Recibo(dict):
             return None
         dt_inicial = xlrd.xldate.xldate_as_tuple(sheet.cell_value(rowx=30, colx=1), 0)
         dt_final = xlrd.xldate.xldate_as_tuple(sheet.cell_value(rowx=30, colx=3), 0)
-        dados = cls.__novo_dados_padrao()
+        dados = cls.__dados_padrao()
         dados['nome'] = sheet.cell_value(rowx=13, colx=1)
         dados['cpf'] = sheet.cell_value(rowx=16, colx=1)
         dados['dt_nascimento'] = ''
@@ -305,7 +373,7 @@ class Recibo(dict):
     
     @classmethod
     def novo_de_texto(cls, text: str) -> 'Recibo':
-        dados = cls.__novo_dados_padrao()
+        dados = cls.__dados_padrao()
         for ch_vl in text.split('«')[:-1]:
             ch, vl = ch_vl.split('»')
             dados.update({ch: vl})
@@ -315,13 +383,6 @@ class Recibo(dict):
         pessoa_db = bd.pessoas.get(where('cpf')==self['cpf'])
         if pessoa_db is None:
             bd.pessoas.insert(self.__dados_pessoa)
-        assinatura_recibo = (str(self['cbo']) +
-            str(self['cpf']) +
-            str(self['dt_final']) +
-            str(self['orgao']) +
-            str(self['valor'])
-        )
-        self['id'] = str(uuid.UUID(md5(assinatura_recibo.encode()).hexdigest()))
         recibo_db = bd.recibos.get(where('id')==self['id'])
         if recibo_db is None:
             bd.recibos.insert(self)
@@ -376,6 +437,9 @@ class Planilha(object):
     
     def dados_gravar(self, reg: dict) -> list:
         return [reg[col] for col in self.conversor.values()]
+    
+    def existe(self, chave) -> bool:
+        return chave in self.__registros
     
     def gravar(self) -> None:
         wb = Workbook()
@@ -441,6 +505,9 @@ class Planilha(object):
         if not registro[self.identificador] in self.__registros:
             self.__registros[registro[self.identificador]] = self.classe(**registro)
     
+    def registro(self, chave) -> dict:
+        return self.__registros[chave]
+    
     def registros(self) -> List:
         return list(self.__registros.values())
     
@@ -495,6 +562,9 @@ class PlanilhaPessoas(Planilha):
     identificador = 'cpf'
     titulo = 'Pessoas'
 
+    def __init__(self) -> None:
+        super().__init__(loc=destino.joinpath(f'Pessoas.xlsx'))
+
 
 class PlanilhaRecibos(Planilha):
     classe = Recibo
@@ -534,7 +604,7 @@ class PlanilhaRecibos(Planilha):
     }
     conversor_ao_contrario = {v: k for k, v in conversor.items()}
     estilos = {
-        'data': ['Data inicial', 'Data de nascimento', 'Data final'],
+        'data': ['Data inicial', 'Data de nascimento', 'Data final', 'Data do pagamento'],
         'cpf': ['CPF'],
         'nit': ['NIS/PIS'],
         'cbo': ['CBO'],
@@ -546,7 +616,7 @@ class PlanilhaRecibos(Planilha):
         'centro': [
             'Enviar', 'ID S-1200', 'Protocolo de envio S-1200', 'Recibo de envio S-1200',
             'ID S-1210', 'Protocolo de envio S-1210', 'Recibo de envio S-1210',
-            'Identificador', 'Demonstrativo', 'Data do pagamento',
+            'Identificador', 'Demonstrativo',
         ]
     }
     identificador = 'id'
@@ -690,14 +760,26 @@ def normalizar_valor(valor: str) -> Tuple[Optional[float],Optional[str]]:
         return 0, None
     elif isinstance(valor, (int, float)):
         return valor, None
-    elif valor.startswith('R$ '):
+    elif isinstance(valor, str):
         try:
-            _, valor = valor.split()
-            return float(valor.replace('.', '').replace(',', '.')), None
+            valor = valor.replace('.', '').replace(',', '.').replace('R$', '').replace('-', '')
+            return float(valor.strip() or 0), None
         except Exception as erro:
             return None, f"Valor '{valor}' não corresponde ao esperado: {erro}"
     else:
         return None, f"Valor '{valor}' não corresponde ao esperado."
+
+def para_decimal(valor: Union[float, str, int]) -> decimal.Decimal:
+    if isinstance(valor, (float, int)):
+        return decimal.Decimal(valor)
+    elif isinstance(valor, str):
+        valor_n = valor.replace('R$', '').replace('.', '').replace(',', '.').replace('-', '').strip()
+        return decimal.Decimal(valor_n or '0')
+    else:
+        raise ValueError(
+            f"{valor} é do tipo {type(valor)} quando se esperava "
+            "uma string, int ou um float."
+        )
 
 def salvar_dados(dados: List[dict], dst: Path, fieldnames: Optional[List]=None) -> None:
     with dst.open('w', newline='') as arq:

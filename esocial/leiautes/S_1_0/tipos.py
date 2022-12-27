@@ -1651,7 +1651,6 @@ class TIdeEventoFolhaSemRetificacao:
         metadata={
             "name": "indApuracao",
             "type": "Element",
-            "namespace": "http://www.esocial.gov.br/schema/evt/evtAdmPrelim/v_S_01_00_00",
             "required": True,
         }
     )
@@ -1660,7 +1659,6 @@ class TIdeEventoFolhaSemRetificacao:
         metadata={
             "name": "perApur",
             "type": "Element",
-            "namespace": "http://www.esocial.gov.br/schema/evt/evtAdmPrelim/v_S_01_00_00",
             "required": True,
             "min_length": 4,
             "max_length": 7,
@@ -1672,7 +1670,6 @@ class TIdeEventoFolhaSemRetificacao:
         metadata={
             "name": "indGuia",
             "type": "Element",
-            "namespace": "http://www.esocial.gov.br/schema/evt/evtAdmPrelim/v_S_01_00_00",
         }
     )
     tp_amb: Optional[TipoAmbiente] = field(
@@ -1680,7 +1677,6 @@ class TIdeEventoFolhaSemRetificacao:
         metadata={
             "name": "tpAmb",
             "type": "Element",
-            "namespace": "http://www.esocial.gov.br/schema/evt/evtAdmPrelim/v_S_01_00_00",
             "required": True,
         }
     )
@@ -1689,7 +1685,6 @@ class TIdeEventoFolhaSemRetificacao:
         metadata={
             "name": "procEmi",
             "type": "Element",
-            "namespace": "http://www.esocial.gov.br/schema/evt/evtAdmPrelim/v_S_01_00_00",
             "required": True,
         }
     )
@@ -1698,7 +1693,6 @@ class TIdeEventoFolhaSemRetificacao:
         metadata={
             "name": "verProc",
             "type": "Element",
-            "namespace": "http://www.esocial.gov.br/schema/evt/evtAdmPrelim/v_S_01_00_00",
             "required": True,
             "min_length": 1,
             "max_length": 20,

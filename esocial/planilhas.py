@@ -2,6 +2,32 @@ from core import destino
 from coletar import Planilha
 
 
+class PlanilhaFolha(Planilha):
+    conversor = {
+        'Referência': 'per_apur',
+        'ID S-1298': 'id_s1298',
+        'Protocolo S-1298': 'protocolo_s1298',
+        'Recibo S-1298': 'recibo_s1298',
+        'Erro S-1298': 'erro_s1298',
+        'ID S-1299': 'id_s1299',
+        'Protocolo S-1299': 'protocolo_s1299',
+        'Recibo S-1299': 'recibo_s1299',
+        'Erro S-1299': 'erro_s1299',
+    }
+    estilos = {
+        'centro': [
+            'Referência',
+            'ID S-1298', 'Protocolo S-1298', 'Recibo S-1298', 'Erro S-1298',
+            'ID S-1299', 'Protocolo S-1299', 'Recibo S-1299', 'Erro S-1299',
+        ]
+    }
+    identificador = 'per_apur'
+    titulo = 'EventosFolha'
+
+    def __init__(self) -> None:
+        super().__init__(loc=destino.joinpath('Folhas.xlsx'))
+
+
 class PlanilhaS3000(Planilha):
     conversor = {
         'Nº do recibo': 'nr_rec_evt',
@@ -27,3 +53,25 @@ class PlanilhaS3000(Planilha):
 
     def __init__(self) -> None:
         super().__init__(loc=destino.joinpath('Eventos S-3000.xlsx'))
+
+
+class PlanilhaTotalizadorINSS(Planilha):
+    conversor = {
+        'Identificador': 'id_',
+        'Competência': 'per_apur',
+        'CPF': 'cpf',
+        'Nome': 'nome',
+        'Descontado': 'descontado',
+        'Apurado': 'apurado',
+        'Diferença': 'diferenca',
+    }
+    estilos = {
+        'centro': ['Identificador', 'Competência'],
+        'cpf': ['CPF'],
+        'moeda': ['Descontado', 'Apurado', 'Diferença'],
+    }
+    identificador = 'id_'
+    titulo = 'TotalizadorINSS'
+
+    def __init__(self) -> None:
+        super().__init__(loc=destino.joinpath(f'TotalizadorInss.xlsx'))

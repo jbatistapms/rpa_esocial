@@ -7,6 +7,8 @@ from lxml import etree
 from M2Crypto import m2, Engine, SSL
 from M2Crypto import m2urllib2 as urllib2
 
+from esocial.utils import SingletonMeta
+
 from . import core
 
 id_ = 'pkcs11'
@@ -79,7 +81,7 @@ def assinar(xml):
         cert=cert.as_pem(),
     )
 
-class PrimaryKey(object):
+class PrimaryKey(metaclass=SingletonMeta):
     def __init__(self) -> None:
         self._key = obter_token()
     

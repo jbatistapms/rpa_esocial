@@ -27,6 +27,10 @@ if __name__ == '__main__':
         elif args.tipo == '1210':
             enviar_s1210(registros=ctrl.pln_recibos.registros())
             ctrl.pln_recibos.gravar()
+        elif args.tipo == '1298':
+            enviar_s1298()
+        elif args.tipo == '1299':
+            enviar_s1299()
         elif args.tipo == '3000':
             pln = PlanilhaS3000()
             enviar_s3000(registros=pln.registros())
@@ -38,6 +42,10 @@ if __name__ == '__main__':
         elif args.tipo == '1210':
             consultar_s1210(registros=ctrl.pln_recibos.registros())
             ctrl.pln_recibos.gravar()
+        elif args.tipo == '1298':
+            consultar_s1298()
+        elif args.tipo == '1299':
+            consultar_s1299()
         elif args.tipo == '3000':
             pln = PlanilhaS3000()
             consultar_s3000(registros=pln.registros())

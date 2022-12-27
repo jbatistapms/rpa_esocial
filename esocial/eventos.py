@@ -1,4 +1,5 @@
 import json
+from pprint import pprint
 import secrets
 import unicodedata
 import xmlschema
@@ -16,7 +17,9 @@ from xsdata.formats.dataclass.serializers.config import SerializerConfig
 from xsdata.formats.dataclass.serializers.xml import XmlSerializer
 from xsdata.models.datatype import XmlDate
 
+from coletar import PlanilhaPessoas
 from core import perfil
+from esocial.planilhas import PlanilhaFolha, PlanilhaTotalizadorINSS
 
 from . import core, token, utils
 from .leiautes import *
@@ -235,6 +238,52 @@ def montar_S1210_Pagamento(dt_pgto: XmlDate, tp_pgto: S1210.InfoPgtoTpPgto, per_
         vr_liq=valor,
     )
 
+def montar_S1298(per_ref: str) -> tuple:
+    ide_evento = tipos.TIdeEventoFolhaSemRetificacao(
+        ind_apuracao=tipos.TsIndApuracao.VALUE_1,
+        per_apur=per_ref,
+        tp_amb=core.TIPO_AMBIENTE,
+        proc_emi=PROCESSO_EMISSAO,
+        ver_proc=VERSAO_APLICATIVO
+    )
+    ide_empregador = tipos.TIdeEmpregador(
+        **IDE_EMPREGADOR
+    )
+    id_ = gerar_id()
+    evt_reabre_ev_per = S2198.Evento.EvtReabreEvPer(
+        ide_evento=ide_evento,
+        ide_empregador=ide_empregador,
+        id=id_,
+    )
+    return id_, S2198.Evento(evt_reabre_ev_per=evt_reabre_ev_per)
+
+def montar_S1299(per_ref: str) -> tuple:
+    ide_evento = tipos.TIdeEventoFolhaSemRetificacao(
+        ind_apuracao=tipos.TsIndApuracao.VALUE_1,
+        per_apur=per_ref,
+        tp_amb=core.TIPO_AMBIENTE,
+        proc_emi=PROCESSO_EMISSAO,
+        ver_proc=VERSAO_APLICATIVO
+    )
+    ide_empregador = tipos.TIdeEmpregador(
+        **IDE_EMPREGADOR
+    )
+    info_fech = S2199.Evento.EvtFechaEvPer.InfoFech(
+        evt_remun="S",
+        evt_com_prod="N",
+        evt_contrat_av_np="N",
+        evt_info_compl_per="N",
+        nao_valid="S",
+    )
+    id_ = gerar_id()
+    evt_fecha_ev_per = S2199.Evento.EvtFechaEvPer(
+        ide_evento=ide_evento,
+        ide_empregador=ide_empregador,
+        info_fech=info_fech,
+        id=id_,
+    )
+    return id_, S2199.Evento(evt_fecha_ev_per=evt_fecha_ev_per)
+
 def montar_S3000(
         tp_evento: str, nr_rec_evt: str, cpf_trab: str, 
         ind_apuracao: str, per_apur: str,
@@ -273,7 +322,7 @@ def enviar_s1200(registros):
     logger.info("Organizando dados de trabalho.")
     dados_ev = defaultdict(list)
     for rec in registros:
-        if not rec['protocolo_s1200'] or rec['erro_s1200']:
+        if rec['enviar'] and (not rec['protocolo_s1200'] or rec['erro_s1200']):
             rec['id_s1200'] = ''
             rec['protocolo_s1200'] = ''
             rec['erro_s1200'] = ''
@@ -317,12 +366,7 @@ def enviar_s1200(registros):
             vr_rubr=dsc_iss,
             ind_apur_ir='0',
         )
-        dia, mes, ano = dados_ev[cpf][0]['dt_nascimento'].split('/')
-        dt_nasc = XmlDate(
-            year=int(ano),
-            month=int(mes),
-            day=int(dia),
-        )
+        dt_nasc = utils.obter_xmldate(data=dados_ev[cpf][0]['dt_nascimento'])
         dia, mes, ano = dados_ev[cpf][0]['dt_final'].split('/')
         remuneracoes = [remuneracao, inss]
         if dsc_irrf > 0:
@@ -384,8 +428,9 @@ def consultar_s1200(registros):
     dados_evt = defaultdict(list)
     dados_reg = defaultdict(list)
     for reg in registros:
-        dados_evt[reg['protocolo_s1200']].append(reg['id_s1200'])
-        dados_reg[reg['id_s1200']].append(reg)
+        if not reg['protocolo_s1200'] in ['', None, 'eSocial Web']:
+            dados_evt[reg['protocolo_s1200']].append(reg['id_s1200'])
+            dados_reg[reg['id_s1200']].append(reg)
 
     client = Client(url_consulta(), transport=transport)
     client.set_options(cache=cache)
@@ -400,7 +445,37 @@ def consultar_s1200(registros):
         eventos = retorno_eventos['eSocial']['retornoProcessamentoLoteEventos']['retornoEventos']['evento']
         if isinstance(eventos, dict):
             eventos = [eventos]
+        pln_pessoas = PlanilhaPessoas()
+        pln_totinss = PlanilhaTotalizadorINSS()
         for evento in eventos:
+            # Totalizadores
+            if 'tot' in evento:
+                for tot in evento['tot']:
+                    if tot['_tipo'] == 'S5001':
+                        evt_base = tot['eSocial']['evtBasesTrab']
+                        per_apur = evt_base['ideEvento']['perApur']
+                        cpf = int(evt_base['ideTrabalhador']['cpfTrab'])
+                        apurado = Decimal(evt_base['infoCpCalc']['vrCpSeg'])
+                        descontado = Decimal(evt_base['infoCpCalc']['vrDescSeg'])
+                        diferenca = descontado - apurado
+                        id_ = f'{per_apur}-{cpf:>011}'
+                        if pln_pessoas.existe(chave=cpf):
+                            nome = pln_pessoas.registro(chave=cpf)['nome']
+                        else:
+                            nome = ''
+                        tot_s5001 = {
+                            'id_': id_,
+                            'per_apur': per_apur,
+                            'nome': nome,
+                            'cpf': cpf,
+                            'descontado': descontado,
+                            'apurado': apurado,
+                            'diferenca': diferenca
+                        }
+                        if pln_totinss.existe(chave=id_):
+                            pln_totinss.atualizar(chave=id_, dados=tot_s5001)
+                        else:
+                            pln_totinss.inserir(registro=tot_s5001)
             retorno_evento = evento['retornoEvento']['eSocial']['retornoEvento']
             id_ = retorno_evento['_Id']
             if id_ in dados_evt[protocolo]:
@@ -416,26 +491,35 @@ def consultar_s1200(registros):
                     if not isinstance(ocorrencias, list):
                         ocorrencias = [ocorrencias]
                     for ocorr in ocorrencias:
-                        dscr_resp.append(ocorr['ocorrencia']['descricao'])
+                        if isinstance(ocorr['ocorrencia'], list):
+                            for o in ocorr['ocorrencia']:
+                                dscr_resp.append(o['descricao'])
+                        else:
+                            dscr_resp.append(ocorr['ocorrencia']['descricao'])
                     for reg in dados_reg[id_]:
                         reg['erro_s1200'] = '\n'.join(dscr_resp)
+        pln_totinss.gravar()
 
 def enviar_s1210(registros):
     logger.info("Preparando dados.")
     dados_evt = defaultdict(list)
     for reg in registros:
-        if not reg['recibo_s1210'] and reg['recibo_s1200'] and reg['dt_pgto'] and (not reg['id_s1210'] or reg['S-1210 Erro']):
+        if reg['recibo_s1200'] and reg['dt_pgto'] and reg['recibo_s1210'] is None and reg['id_s1210'] is None:
             dados_evt[reg['cpf']].append(reg)
     
     lista_eventos = []
     identificador = defaultdict(list)
+    if not dados_evt:
+        logger.info("Não foram encontrados pagamentos para informar.")
+        return
+        
     for cpf, evts in dados_evt.items():
         dm_val = Decimal('0')
         for ev in evts:
             dm_val += Decimal(utils.txt_para_num(ev['v_liquido']))
         
         dados = evts[0]
-        dt_pgto = XmlDate.from_datetime(dados['dt_pgto'])
+        dt_pgto = utils.obter_xmldate(data=dados['dt_pgto'])
         per_ref = dados['dt_pgto'].strftime("%Y-%m")
         info_pg = montar_S1210_Pagamento(
             dt_pgto=dt_pgto,
@@ -489,11 +573,12 @@ def consultar_s1210(registros):
     client = Client(url_consulta(), transport=transport)
     client.set_options(cache=cache)
     for protocolo in dados:
-        if protocolo == '':
+        if protocolo in ['', 'eSocial Web']:
             continue
         arquivo_consulta = core.DIR_CONSULTAS.joinpath(f'{protocolo}.json')
         if not arquivo_consulta.exists():
             result = client.service.ConsultarLoteEventos(consulta=Raw(consulta_lote_eventos(protocolo)))
+            logger.info(f"Salvando dados da consulta protocolo nº {protocolo}.")
             core.salvar_consulta(result)
         with open(arquivo_consulta) as arq:
             retorno_eventos = json.loads(arq.read())
@@ -517,6 +602,148 @@ def consultar_s1210(registros):
                     dscr_resp.append(ocorr['ocorrencia']['descricao'])
                 for reg in lista_registros[id_]:
                     reg['erro_s1210'] = '\n'.join(dscr_resp)
+
+def enviar_s1298() -> None:
+    pln = PlanilhaFolha()
+    mes, ano = perfil['competencia'].split('/')
+    per_apur = f"{ano}-{mes:02}"
+    logger.info(f"Iniciando reabertura de folha de pagamento da competência {per_apur}")
+    if not pln.existe(chave=per_apur):
+        logger.info(f"Não há registro de fopag na competência de {per_apur}.")
+        return
+    id_, evento = montar_S1298(per_ref=per_apur)
+    lote_para_envio = envio_lote_eventos(
+        evs={id_: evento},
+        grupo=utils.LoteEventosTipoGrupo.EVENTOS_PERIODICOS,
+    )
+    client = Client(url_envio(), transport=transport)
+    client.set_options(cache=cache)
+    logger.info("Enviando o lote.")
+    result = client.service.EnviarLoteEventos(loteEventos=Raw(lote_para_envio))
+    protocolo_envio = core.salvar_retorno(result) or ''
+    logger.info("Lote enviado.")
+    pln.atualizar(chave=per_apur, dados={
+        'id_s1298': id_,
+        'protocolo_s1298': protocolo_envio
+    })
+    pln.gravar()
+
+def consultar_s1298() -> None:
+    pln = PlanilhaFolha()
+    mes, ano = perfil['competencia'].split('/')
+    per_apur = f"{ano}-{mes:02}"
+    logger.info(
+        f"Iniciando consulta de abertura da "
+        f"fopag da competência {per_apur}"
+    )
+    if not pln.existe(chave=per_apur):
+        logger.info("Competência não existe nos registros.")
+        return
+    
+    comp = pln.registro(chave=per_apur)
+    protocolo = comp['protocolo_s1298']
+
+    if not protocolo:
+        logger.info("Protocolo de envio inexistente. Não é possível prosseguir.")
+        return
+
+    arquivo_consulta = core.DIR_CONSULTAS.joinpath(f'{protocolo}.json')
+    if not arquivo_consulta.exists():
+        client = Client(url_consulta(), transport=transport)
+        client.set_options(cache=cache)
+        result = client.service.ConsultarLoteEventos(consulta=Raw(consulta_lote_eventos(protocolo)))
+        core.salvar_consulta(result)
+    with open(arquivo_consulta) as arq:
+        retorno_eventos = json.loads(arq.read())
+    eventos = retorno_eventos['eSocial']['retornoProcessamentoLoteEventos']['retornoEventos']['evento']
+    if isinstance(eventos, dict):
+        eventos = [eventos]
+    for evento in eventos:
+        retorno_evento = evento['retornoEvento']['eSocial']['retornoEvento']
+        id_ = retorno_evento['_Id']
+        resposta = retorno_evento['processamento']['descResposta']
+        if resposta == 'Sucesso.':
+            recibo = retorno_evento['recibo']['nrRecibo']
+            comp['recibo_s1298'] = recibo
+        else:
+            dscr_resp = [resposta]
+            ocorrencias = retorno_evento['processamento']['ocorrencias']
+            if not isinstance(ocorrencias, list):
+                ocorrencias = [ocorrencias]
+            for ocorr in ocorrencias:
+                dscr_resp.append(ocorr['ocorrencia']['descricao'])
+            comp['erro_s1298'] = '\n'.join(dscr_resp)
+    pln.gravar()
+
+def enviar_s1299() -> None:
+    pln = PlanilhaFolha()
+    mes, ano = perfil['competencia'].split('/')
+    per_apur = f"{ano}-{mes:02}"
+    logger.info(f"Iniciando fechamento de folha de pagamento da competência {per_apur}")
+    if not pln.existe(chave=per_apur):
+        pln.inserir({'per_apur': per_apur})
+    id_, evento = montar_S1299(per_ref=per_apur)
+    lote_para_envio = envio_lote_eventos(
+        evs={id_: evento},
+        grupo=utils.LoteEventosTipoGrupo.EVENTOS_PERIODICOS,
+    )
+    client = Client(url_envio(), transport=transport)
+    client.set_options(cache=cache)
+    logger.info("Enviando o lote.")
+    result = client.service.EnviarLoteEventos(loteEventos=Raw(lote_para_envio))
+    protocolo_envio = core.salvar_retorno(result) or ''
+    logger.info("Lote enviado.")
+    pln.atualizar(chave=per_apur, dados={
+        'id_s1299': id_,
+        'protocolo_s1299': protocolo_envio
+    })
+    pln.gravar()
+
+def consultar_s1299() -> None:
+    pln = PlanilhaFolha()
+    mes, ano = perfil['competencia'].split('/')
+    per_apur = f"{ano}-{mes:02}"
+    logger.info(
+        f"Iniciando consulta de processamento da "
+        f"folha de pagamento competência {per_apur}"
+    )
+    if not pln.existe(chave=per_apur):
+        logger.info("Competência não existe nos registros.")
+        return
+    comp = pln.registro(chave=per_apur)
+    protocolo = comp['protocolo_s1299']
+
+    if not protocolo:
+        logger.info("Protocolo de envio inexistente. Não é possível prosseguir.")
+        return
+
+    arquivo_consulta = core.DIR_CONSULTAS.joinpath(f'{protocolo}.json')
+    if not arquivo_consulta.exists():
+        client = Client(url_consulta(), transport=transport)
+        client.set_options(cache=cache)
+        result = client.service.ConsultarLoteEventos(consulta=Raw(consulta_lote_eventos(protocolo)))
+        core.salvar_consulta(result)
+    with open(arquivo_consulta) as arq:
+        retorno_eventos = json.loads(arq.read())
+    eventos = retorno_eventos['eSocial']['retornoProcessamentoLoteEventos']['retornoEventos']['evento']
+    if isinstance(eventos, dict):
+        eventos = [eventos]
+    for evento in eventos:
+        retorno_evento = evento['retornoEvento']['eSocial']['retornoEvento']
+        id_ = retorno_evento['_Id']
+        resposta = retorno_evento['processamento']['descResposta']
+        if resposta == 'Sucesso.':
+            recibo = retorno_evento['recibo']['nrRecibo']
+            comp['recibo_s1299'] = recibo
+        else:
+            dscr_resp = [resposta]
+            ocorrencias = retorno_evento['processamento']['ocorrencias']
+            if not isinstance(ocorrencias, list):
+                ocorrencias = [ocorrencias]
+            for ocorr in ocorrencias:
+                dscr_resp.append(ocorr['ocorrencia']['descricao'])
+            comp['erro_s1299'] = '\n'.join(dscr_resp)
+    pln.gravar()
 
 def enviar_s3000(registros) -> None:
     logger.info("Preparando e criando eventos S-3000.")
